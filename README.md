@@ -81,3 +81,31 @@ leads_ptau_pet_analysis/
 ├── README.md
 ```
   
+# Baseline analysis 
+
+## Data summary, baseline ptau ROC, T1 (EOAD vs. EOnonAD)
+- **File**: baseline_ptau_roc_t1.ipynb
+
+- **Cohort Filtering**
+  - Uses baseline subjects with available plasma p-tau217 measurements
+  - Restricts analysis to EOAD and EOnonAD groups
+  - Summarizes longitudinal follow-up (≥2 visits) for EOAD participants
+
+- **Table 1**
+  - Generates baseline descriptive statistics for demographic, clinical, and biomarker variables
+  - Reports continuous and categorical variables stratified by cohort (EOAD vs EOnonAD)
+
+- **ROC Analysis**
+  - Computes receiver operating characteristic (ROC) curves for plasma p-tau217 and estimates area under the curve (AUC)
+  - Calculates 95% confidence intervals for AUC using:
+    - DeLong method (primary)
+    - Bootstrap resampling (for ROC band visualization)
+  - Determines the optimal cutoff using the Youden index
+  - Evaluates diagnostic performance at:
+    - Youden-optimal cutoff (EOAD/LEADS-derived threshold)
+    - NCRAD threshold
+  - Reports:
+    - Sensitivity and specificity with 95% confidence intervals (Wilson method)
+    - Confusion matrix counts (TP, FP, TN, FN)
+
+ 
