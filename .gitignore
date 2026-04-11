@@ -9,5 +9,6 @@ renewal_figure_petcore/
 tau26/
 *store*
 *$*
-
-
+unused_codes/
+*Rproj*
+.Rproj.user
