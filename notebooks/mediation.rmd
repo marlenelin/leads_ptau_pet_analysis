@@ -1,0 +1,171 @@
+---
+title: "mediation"
+author: "marlene lin"
+date: "`r Sys.Date()`"
+output: html_document
+---
+# import 
+```{r}
+# Core libraries
+library(tidyverse)
+library(lubridate)
+library(semPlot)
+# Modeling / mediation
+library(lme4)
+library(lmerTest)
+library(mediation)     # classic mediation
+library(lavaan)        # SEM-style mediation (optional)
+library(broom)
+library(dplyr)
+library(rlang)
+
+```
+# Read data
+```{r}
+path <- "/Users/mlin2/Desktop/RabLab/tasks/concurrent/cleaned_dat/"
+mpath <- "/Users/mlin2/Desktop/RabLab/tasks/concurrent/clean_dat/"
+mergedat <- read_csv(paste0(path, "merged_baseline_wDemo.csv"))
+#ptau <- read_csv(paste0(path, "ptau_cleaned_20260316.csv"))
+#tau  <- read_csv(paste0(path, "tau_cleaned_20260316.csv"))
+#amy  <- read_csv(paste0(path, "amy_cleaned_20260316.csv"))
+#cdr  <- read_csv(paste0(path, "cdr_cleaned_20260316.csv"))
+#mergedat <- read_csv(paste0(mpath,"merged_by_baseline_20260319.csv")) # read_csv(paste0(mpath,"ptau_merged_baseline_20260223_wROI.csv")) 
+# Centioids_wcbl, pTau217.Conc..pg.mL, ctx_desikan_FTP_SUVR
+# Ensure consistent ID + date formats
+#ptau <- ptau %>% mutate(ptau_date = as.Date(ptau_date))
+#tau  <- tau  %>% mutate(tau_date  = as.Date(tau_date))
+#amy  <- amy  %>% mutate(amy_date  = as.Date(amy_date))
+#cdr  <- cdr  %>% mutate(cdr_date  = as.Date(cdr_date))
+# key columns: cdr$cdrsb ptau$ptau217 tau$desikan_suvr amy$centiloid_wcbl 
+```
+#
+# baseline data and scaled
+```{r}
+make_df_base <- function(dat,
+                         dx_col,
+                         dx_keep = "EOAD",
+                         amy_col,
+                         ptau_col,
+                         tau_col,
+                         amy_date_col = NULL,
+                         ptau_date_col = NULL,
+                         tau_date_col = NULL) {
+  dat %>%
+    filter(.data[[dx_col]] == dx_keep) %>% 
+    dplyr::filter(
+      .data[[dx_col]] == dx_keep,
+      !is.na(.data[[amy_col]]),
+    !is.na(.data[[ptau_col]]),
+      !is.na(.data[[tau_col]])
+    ) %>%
+    mutate(
+      amy_z = as.numeric(scale(.data[[amy_col]])),
+      ptau  = as.numeric(.data[[ptau_col]]),
+      tau_z = as.numeric(scale(.data[[tau_col]]))
+    ) %>%
+    dplyr::select(
+      amy_z, ptau, tau_z,#tx_started,
+      all_of(c(amy_col, ptau_col, tau_col)),
+      any_of(c(amy_date_col, ptau_date_col, tau_date_col))
+    )
+}
+df_base <- make_df_base(
+  dat = mergedat,
+  dx_col = "dx",#"diagnosis_group",#
+  amy_col ="centiloid_wcbl",#"Centiloids_wcbl", #
+  ptau_col = "ptau217",#"pTau217.Conc..pg.mL.",#"ptau217",
+  tau_col = "desikan_suvr",#"ctx_desikan_FTP_SUVR",#
+ # amy_date_col = "amy_date",
+#  ptau_date_col = "ptau_date",
+#  tau_date_col = "tau_date"
+)# %>%filter(tx_started==0)
+```
+
+```{r}
+nrow(df_base)
+```
+
+# mediate
+```{r}
+
+med_model <- lm(ptau ~ amy_z, data = df_base)
+out_model <- lm(tau_z ~ amy_z + ptau, data = df_base)
+
+med <- mediate(
+  med_model,
+  out_model,
+  treat = "amy_z",
+  mediator = "ptau",
+  boot = TRUE,
+  sims = 1000
+)
+
+summary(med)
+
+```
+
+# lavaan model spec
+```{R}
+model <- '
+  # mediator
+  ptau ~ a * amy_z
+  
+  # outcome
+  tau_z ~ b * ptau + c_prime * amy_z
+  
+  # indirect + total effects
+  indirect := a * b
+  total := c_prime + (a * b)
+'
+
+fit <- sem(model,data=df_base)
+summary(fit)
+standardizedsolution(fit)
+```
+
+# diagram
+```{R} 
+
+semPaths(
+  fit,
+  what = "std",
+  layout = "tree",
+  edge.label.cex = 1.2,
+  sizeMan = 6
+)
+```
+
+
+
+```{r}
+parameterEstimates(fit)
+standardizedsolution(fit)
+```
+
+```{R}
+model_a <- lm(ptau_z ~ amy_z, data = df_base)
+summary(model_a)
+model_c <- lm(tau_z ~ amy_z, data = df_base)
+summary(model_c)
+model_b_cprime <- lm(tau_z ~ amy_z + ptau_z, data = df_base)
+summary(model_b_cprime)
+a <- coef(model_a)["amy_z"]
+b <- coef(model_b_cprime)["ptau_z"]
+c <- coef(model_c)["amy_z"]
+c_prime <- coef(model_b_cprime)["amy_z"]
+indirect <- a * b
+total <- c
+direct <- c_prime
+prop_mediated <- indirect / total
+cat("Path a (amyloid → ptau):", round(a, 3), "\n")
+cat("Path b (ptau → tau):", round(b, 3), "\n")
+cat("Path c (total effect):", round(c, 3), "\n")
+cat("Path c' (direct effect):", round(c_prime, 3), "\n\n")
+
+cat("Indirect effect (a*b):", round(indirect, 3), "\n")
+cat("Proportion mediated:", round(prop_mediated, 3), "\n")
+p_a <- summary(model_a)$coefficients["amy_z", "Pr(>|t|)"]
+p_b <- summary(model_b_cprime)$coefficients["ptau_z", "Pr(>|t|)"]
+p_c <- summary(model_c)$coefficients["amy_z", "Pr(>|t|)"]
+p_cprime <- summary(model_b_cprime)$coefficients["amy_z", "Pr(>|t|)"]
+```

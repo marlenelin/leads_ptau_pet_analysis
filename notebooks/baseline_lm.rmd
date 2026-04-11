@@ -1,0 +1,390 @@
+---
+title: "Cross-sectional modeling"
+author: "marlene lin"
+date: "`r Sys.Date()`"
+output: html_document
+---
+```{r import}
+library(tidyverse)
+library(dplyr)
+library(broom)
+library(parameters)
+library(knitr)  
+library(interactions)
+path <- "/Users/mlin2/Desktop/RabLab/tasks/concurrent/cleaned_dat/" 
+mergedat <- read_csv(paste0(path, "merged_baseline_wDemo.csv"))
+mergedat$log_ptau217 <- log(mergedat$ptau217)
+mergedat <- mergedat %>% 
+  filter(
+    !is.na(ptau217),
+    !is.na(desikan_suvr),
+    !is.na(centiloid_wcbl)
+  )
+df_base_eoad <- mergedat %>% filter(dx == "EOAD") 
+df_base_ci <- mergedat %>% filter(dx == "EOAD" | dx =="EOnonAD")
+covars <- c("age_at_ptau", "sex", "years_education")
+
+# total length by dx
+by_dx <- df_base_ci %>% count(dx)
+print(by_dx)
+```
+```{r helper function for reporting}
+extract_term_stats <- function(fit, term_name) {
+  raw_tbl <- broom::tidy(fit, conf.int = TRUE) %>%
+    filter(.data$term == term_name)
+
+  std_tbl <- parameters::standardize_parameters(fit, method = "posthoc") %>%
+    as_tibble() %>%
+    rename(term = Parameter) %>%
+    filter(.data$term == term_name)
+
+  if (nrow(raw_tbl) == 0 || nrow(std_tbl) == 0) {
+    return(tibble(
+      b = NA_real_, b_low = NA_real_, b_high = NA_real_, p = NA_real_,
+      beta = NA_real_, beta_low = NA_real_, beta_high = NA_real_
+    ))
+  }
+
+  tibble(
+    b = raw_tbl$estimate,
+    b_low = raw_tbl$conf.low,
+    b_high = raw_tbl$conf.high,
+    p = raw_tbl$p.value,
+    beta = std_tbl$Std_Coefficient,
+    beta_low = std_tbl$CI_low,
+    beta_high = std_tbl$CI_high
+  )
+}
+
+summarize_model_row <- function(fit, model_name, term_map) {
+  out <- tibble(
+    model = model_name,
+    formula = paste(deparse(formula(fit)), collapse = ""),
+    n = nobs(fit),
+    r2 = summary(fit)$r.squared,
+    adj_r2 = summary(fit)$adj.r.squared
+  )
+
+  for (term_name in names(term_map)) {
+    prefix <- term_map[[term_name]]
+    stats <- extract_term_stats(fit, term_name)
+
+    out[[paste0(prefix, "_b")]]        <- stats$b
+    out[[paste0(prefix, "_b_low")]]    <- stats$b_low
+    out[[paste0(prefix, "_b_high")]]   <- stats$b_high
+    out[[paste0(prefix, "_p")]]        <- stats$p
+    out[[paste0(prefix, "_beta")]]     <- stats$beta
+    out[[paste0(prefix, "_beta_low")]] <- stats$beta_low
+    out[[paste0(prefix, "_beta_high")]]<- stats$beta_high
+  }
+
+  out
+}
+
+make_formula <- function(outcome, rhs, covars = character(0)) {
+  f <- paste(outcome, "~", rhs)
+  if (length(covars) > 0) {
+    f <- paste0(f, " + ", paste(covars, collapse = " + "))
+  }
+  as.formula(f)
+}
+
+fit_model_block <- function(df, cohort_name, outcome, covars = character(0)) {
+  needed <- unique(c(outcome, "centiloid_wcbl", "desikan_suvr", covars))
+  miss <- setdiff(needed, names(df))
+  if (length(miss) > 0) stop("Missing columns in ", cohort_name, ": ", paste(miss, collapse = ", "))
+
+  dd <- df %>% drop_na(all_of(needed))
+
+  m1_cl     <- lm(make_formula(outcome, "centiloid_wcbl", covars), data = dd)
+  m2_tau    <- lm(make_formula(outcome, "desikan_suvr", covars), data = dd)
+  m3_cl_tau <- lm(make_formula(outcome, "centiloid_wcbl + desikan_suvr", covars), data = dd)
+  m4_inter  <- lm(make_formula(outcome, "centiloid_wcbl * desikan_suvr", covars), data = dd)
+
+  term_map <- c(
+    centiloid_wcbl = "CL",
+    desikan_suvr = "TAU",
+    `centiloid_wcbl:desikan_suvr` = "CLxTAU"
+  )
+
+  bind_rows(
+    summarize_model_row(m1_cl,     "pTau ~ CL",       term_map),
+    summarize_model_row(m2_tau,    "pTau ~ TAU",      term_map),
+    summarize_model_row(m3_cl_tau, "pTau ~ CL + TAU",  term_map),
+    summarize_model_row(m4_inter,  "pTau ~ CL * TAU",  term_map)
+  ) %>%
+    mutate(
+      cohort = cohort_name,
+      outcome = outcome,
+      adjusted = if_else(length(covars) > 0, "adjusted", "unadjusted"),
+      covariates = if_else(length(covars) > 0,
+                           paste(covars, collapse = " + "),
+                           "none")
+    ) %>%
+    select(cohort, outcome, adjusted, covariates, everything())
+}
+```
+
+
+```{r all combinations for ptau ~ pet}
+# combinations - outcome is ptau or log ptau, covariates none or all 
+all_results <- bind_rows(
+  fit_model_block(df_base_ci,   "df_base_ci",   "log_ptau217", character(0)),
+  fit_model_block(df_base_ci,   "df_base_ci",   "log_ptau217", covars),
+  fit_model_block(df_base_ci,   "df_base_ci",   "ptau217",     character(0)),
+  fit_model_block(df_base_ci,   "df_base_ci",   "ptau217",     covars),
+
+  fit_model_block(df_base_eoad, "df_base_eoad", "log_ptau217", character(0)),
+  fit_model_block(df_base_eoad, "df_base_eoad", "log_ptau217", covars),
+  fit_model_block(df_base_eoad, "df_base_eoad", "ptau217",     character(0)),
+  fit_model_block(df_base_eoad, "df_base_eoad", "ptau217",     covars)
+)
+
+all_results_round <- all_results %>%
+  mutate(across(where(is.numeric), ~ round(.x, 3)))
+all_results_round
+```
+
+
+```{r compact result table}
+fmt_term <- function(b, low, high, p, digits = 3) {
+  if (any(is.na(c(b, low, high, p)))) return(NA_character_)
+  sprintf(
+    paste0("%.", digits, "f [%.", digits, "f, %.", digits, "f], p=%.", digits, "f"),
+    b, low, high, p
+  )
+}
+
+result_vis <- all_results_round %>%
+  rowwise() %>%
+  mutate(
+    model = paste0(
+      cohort, " | ",
+      case_when( #shorten model name
+        model == "pTau ~ CL" ~ "CL",
+        model == "pTau ~ TAU" ~ "TAU",
+        model == "pTau ~ CL + TAU" ~ "CL + TAU",
+        model == "pTau ~ CL * TAU" ~ "CL * TAU",
+        TRUE ~ model
+      ),
+      " | ",
+      if_else(outcome == "log_ptau217", "log(ptau)", "ptau"), #rename outcome
+      if_else(adjusted == "adjusted", " +covar", "") #shorten cov
+    ),
+    `CL` = fmt_term(CL_b, CL_b_low, CL_b_high, CL_p),
+    `TAU` = fmt_term(TAU_b, TAU_b_low, TAU_b_high, TAU_p),
+    `Interaction` = fmt_term(CLxTAU_b, CLxTAU_b_low, CLxTAU_b_high, CLxTAU_p),
+    `Significant covariates` = NA_character_,
+    `Adjusted R^2` = adj_r2
+  ) %>%
+  ungroup() %>%
+  select(model, `CL`, `TAU`, `Interaction`, `Significant covariates`, `Adjusted R^2`)
+
+# get covar p  
+get_covar_pvals <- function(df, cohort_name, outcome, covars) {
+  
+  needed <- unique(c(outcome, "centiloid_wcbl", "desikan_suvr", covars))
+  dd <- df %>% drop_na(all_of(needed))
+  
+  fits <- list(
+    "CL"      = lm(make_formula(outcome, "centiloid_wcbl", covars), data = dd),
+    "TAU"     = lm(make_formula(outcome, "desikan_suvr", covars), data = dd),
+    "CL+TAU"  = lm(make_formula(outcome, "centiloid_wcbl + desikan_suvr", covars), data = dd),
+    "CL*TAU"  = lm(make_formula(outcome, "centiloid_wcbl * desikan_suvr", covars), data = dd)
+  )
+  
+  bind_rows(lapply(names(fits), function(mname) {
+    broom::tidy(fits[[mname]]) %>%
+      filter(term %in% covars) %>%
+      transmute(
+        cohort = cohort_name,
+        outcome = outcome,
+        model = mname,
+        term = term,
+        estimate = estimate,
+        p_value = p.value
+      )
+  }))
+}
+
+covar_pvals <- bind_rows(
+  get_covar_pvals(df_base_ci,   "df_base_ci",   "log_ptau217", covars),
+  get_covar_pvals(df_base_ci,   "df_base_ci",   "ptau217",     covars),
+  get_covar_pvals(df_base_eoad, "df_base_eoad", "log_ptau217", covars),
+  get_covar_pvals(df_base_eoad, "df_base_eoad", "ptau217",     covars)
+) %>%
+  mutate(p_value = round(p_value, 4),
+         estimate = round(estimate, 3))
+ 
+
+# Collapse significant covariates
+sig_covars <- covar_pvals %>%
+  filter(p_value < 0.05) %>%
+  mutate(
+    label = paste0(term, " (p=", sprintf("%.3f", p_value), ")")
+  ) %>%
+  group_by(cohort, outcome, model) %>%
+  summarise(
+    sig_covars = paste(label, collapse = "; "),
+    .groups = "drop"
+  )
+
+# model keys
+result_vis <- result_vis %>%
+  mutate(
+    model_key = case_when(
+      grepl("CL \\* TAU", model) ~ "CL*TAU",
+      grepl("CL \\+ TAU", model) ~ "CL+TAU",
+      grepl("\\| CL \\|", model) ~ "CL",
+      grepl("\\| TAU \\|", model) ~ "TAU",
+      TRUE ~ NA_character_
+    )
+  )
+
+# add covariates
+result_vis <- result_vis %>%
+  left_join(
+    sig_covars,
+    by = c("cohort", "outcome", "model_key" = "model")
+  ) %>%
+  mutate(
+    `Significant covariates` = sig_covars
+  ) %>%
+  select(-sig_covars, -model_key)
+
+# disp
+knitr::kable(result_vis, align = "lccccr")
+
+# save to csv 
+readr::write_csv(
+  result_vis,
+  file = paste0(path, "ptau_pet_model_summary_with_covars.csv")
+)
+ 
+
+ 
+```
+
+
+```{r interaction plot ~ tau}
+ 
+p_ci <- interact_plot(
+  fit_ci,
+  pred = desikan_suvr,
+  modx = centiloid_wcbl,
+  modx.values = "terciles",
+  modx.labels = c("Low CL", "Mid CL", "High CL"),   
+  plot.points = TRUE,
+  interval = TRUE
+) +
+  scale_color_gradient(low = "#fcae70", high = "#cb181d") +
+  scale_fill_gradient(low = "#fcae70", high = "#cb181d") +
+  labs(
+    title = "CI (EOAD + EOnonAD)",
+    x = "Tau PET (desikan_suvr)",
+    y = "Predicted log(pTau)",
+    color = "CL tertiles",
+    fill = "CL tertiles"
+  ) + theme_classic()
+
+# FORCE y-axis
+p_ci$scales$scales <- p_ci$scales$scales[
+  !sapply(p_ci$scales$scales, function(s) "y" %in% s$aesthetics)
+]
+p_ci <- p_ci + scale_y_continuous(limits = c(-3, 3))
+
+p_eoad <- interact_plot(
+  fit_eoad,
+  pred = desikan_suvr,
+  modx = centiloid_wcbl,
+  modx.values = "terciles",
+  modx.labels = c("Low CL", "Mid CL", "High CL"), 
+  plot.points = TRUE,
+  interval = TRUE
+) +
+  scale_color_gradient(low = "#fcae91", high = "#cb181d") +
+  scale_fill_gradient(low = "#fcae91", high = "#cb181d") +
+  labs(
+    title = "EOAD only",
+    x = "Tau PET (desikan_suvr)",
+    y = "Predicted log(pTau)",
+    color = "CL tertiles",
+    fill = "CL tertiles"
+  )+ theme_classic()
+
+# FORCE y-axis
+p_eoad$scales$scales <- p_eoad$scales$scales[
+  !sapply(p_eoad$scales$scales, function(s) "y" %in% s$aesthetics)
+]
+p_eoad <- p_eoad + scale_y_continuous(limits = c(-3, 3))
+
+```
+
+
+
+```{r interaction plot ~ cl}
+
+# ---- colors ----
+green_low  <- "#a1d90b"
+green_high <- "#006d2c"
+
+# ---- models ----
+fit_ci   <- lm(log_ptau217 ~ centiloid_wcbl * desikan_suvr, data = df_base_ci)
+fit_eoad <- lm(log_ptau217 ~ centiloid_wcbl * desikan_suvr, data = df_base_eoad)
+
+# ---- CI plot ----
+p_ci <- interact_plot(
+  fit_ci,
+  pred = centiloid_wcbl,
+  modx = desikan_suvr,
+  modx.values = "terciles",
+  plot.points = TRUE,
+  interval = TRUE
+) +
+  scale_color_gradient(low = green_low, high = green_high) +
+  scale_fill_gradient(low = green_low, high = green_high) +
+  labs(
+    title = "CI (EOAD + EOnonAD)",
+    x = "Amyloid PET (centiloid_wcbl)",
+    y = "Predicted log(pTau)",
+    color = "Tau PET (tertiles)",
+    fill = "Tau PET (tertiles)"
+  ) +
+  theme_classic()
+
+# ---- FORCE y-axis ----
+p_ci$scales$scales <- p_ci$scales$scales[
+  !sapply(p_ci$scales$scales, function(s) "y" %in% s$aesthetics)
+]
+p_ci <- p_ci + scale_y_continuous(limits = c(-3, 3))
+
+
+# ---- EOAD plot ----
+p_eoad <- interact_plot(
+  fit_eoad,
+  pred = centiloid_wcbl,
+  modx = desikan_suvr,
+  modx.values = "terciles",
+  plot.points = TRUE,
+  interval = TRUE
+) +
+  scale_color_gradient(low = green_low, high = green_high) +
+  scale_fill_gradient(low = green_low, high = green_high) +
+  labs(
+    title = "EOAD only",
+    x = "Amyloid PET (centiloid_wcbl)",
+    y = "Predicted log(pTau)",
+    color = "Tau PET (tertiles)",
+    fill = "Tau PET (tertiles)"
+  ) +
+  theme_classic()
+
+# ---- FORCE y-axis ----
+p_eoad$scales$scales <- p_eoad$scales$scales[
+  !sapply(p_eoad$scales$scales, function(s) "y" %in% s$aesthetics)
+]
+p_eoad <- p_eoad + scale_y_continuous(limits = c(-3, 3))
+
+
+
+```

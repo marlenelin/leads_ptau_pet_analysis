@@ -1,0 +1,303 @@
+---
+title: "individual_spa"
+author: "marlene lin"
+date: "`r Sys.Date()`"
+output: html_document
+---
+```{r}
+
+library(nlme)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+```
+
+```{R}
+clean_path <- "/Users/mlin2/Desktop/RabLab/tasks/concurrent/cleaned_dat/"
+
+eoad <- read.csv(
+  file.path(clean_path, "ptau_ref_long_only_eoad_90d.csv"),
+  stringsAsFactors = FALSE
+) %>%
+  mutate(
+    time_yrs_tau  = day_to_baseline_tau  / 365.25,
+    time_yrs_ptau = day_to_baseline_ptau / 365.25,
+    time_yrs_amy  = day_to_baseline_amy  / 365.25
+  ) %>%  #filter longitudinal data
+  group_by(subject_label) %>%
+  filter(n() >= 2) %>%
+  ungroup()
+```
+
+
+```{r}
+ 
+
+# Fit separate mixed models
+tau_mod <- lme(
+  fixed = desikan_suvr ~ time_yrs_tau,
+  random = ~1|subject_label,
+  data = eoad,
+  na.action = na.omit,
+  method = "REML"
+)
+
+ptau_mod <- lme(
+  fixed = log(ptau217) ~ time_yrs_ptau, # toggle log or not log
+  random = ~1|subject_label,
+  data = eoad,
+  na.action = na.omit,
+  method = "REML"
+)
+
+amy_mod <- lme(
+  fixed = centiloid_wcbl ~ time_yrs_amy,
+  random = ~1|subject_label,
+  data = eoad,
+  na.action = na.omit,
+  method = "REML"
+)
+
+# Helper: fixed-effect trajectory + 95% CI
+make_pred <- function(mod, time_var, time_name, y_name, n = 200) {
+  dat <- mod$data
+  x <- dat[[time_var]]
+  x <- x[is.finite(x)]
+
+  grid <- data.frame(
+    x = seq(min(x, na.rm = TRUE), max(x, na.rm = TRUE), length.out = n)
+  )
+  names(grid) <- time_name
+
+  X <- model.matrix(
+    as.formula(paste("~", time_name)),
+    data = grid
+  )
+
+  beta <- fixef(mod)
+  V <- vcov(mod)
+
+  fit <- as.numeric(X %*% beta)
+  se  <- sqrt(diag(X %*% V %*% t(X)))
+
+  grid %>%
+    mutate(
+      fit = fit,
+      lwr = fit - 1.96 * se,
+      upr = fit + 1.96 * se,
+      biomarker = y_name
+    )
+}
+
+# Prediction data
+pred_ptau <- make_pred(ptau_mod, "time_yrs_ptau", "time_yrs_ptau", "p-tau217")
+pred_amy  <- make_pred(amy_mod,  "time_yrs_amy",  "time_yrs_amy",  "Centiloid")
+pred_tau  <- make_pred(tau_mod,  "time_yrs_tau",  "time_yrs_tau",  "Tau PET")
+
+
+pred_ptau <- pred_ptau %>%
+  rename(time = time_yrs_ptau) %>%
+  mutate(biomarker = "p-tau217")
+
+pred_amy <- pred_amy %>%
+  rename(time = time_yrs_amy) %>%
+  mutate(biomarker = "Centiloid")
+
+pred_tau <- pred_tau %>%
+  rename(time = time_yrs_tau) %>%
+  mutate(biomarker = "Tau PET")
+
+pred_all <- bind_rows(pred_ptau, pred_amy, pred_tau) %>%
+  mutate(
+    biomarker = factor(biomarker, levels = c("p-tau217", "Centiloid", "Tau PET"))
+  )
+
+# Spaghetti data with modality-specific time variables
+spaghetti <- eoad %>%
+  select(
+    subject_label,
+    ptau217,time_yrs_ptau,
+    centiloid_wcbl, time_yrs_amy,
+    desikan_suvr, time_yrs_tau
+  ) %>%
+  mutate(log_ptau217 = log(ptau217)) %>%
+  pivot_longer(
+    cols = c(log_ptau217, centiloid_wcbl, desikan_suvr),
+    names_to = "marker",
+    values_to = "value"
+  ) %>%
+  mutate(
+    time = case_when(
+      marker == "log_ptau217" ~ time_yrs_ptau, #toggle ptau217
+      marker == "centiloid_wcbl" ~ time_yrs_amy,
+      marker == "desikan_suvr" ~ time_yrs_tau
+    ),
+    biomarker = case_when(
+      marker == "log_ptau217" ~ "p-tau217", # toggle ptau217
+      marker == "centiloid_wcbl" ~ "Centiloid",
+      marker == "desikan_suvr" ~ "Tau PET"
+    ),
+    biomarker = factor(biomarker, levels = c("p-tau217", "Centiloid", "Tau PET"))
+  ) %>%
+  filter(is.finite(time), is.finite(value))
+
+
+
+```
+
+
+```{r}
+# Colors for individual trajectories
+traj_cols <- c(
+  "p-tau217" = "lightblue",
+  "Centiloid" = "lightgreen",
+  "Tau PET" = "coral"
+)
+
+p <- ggplot() +
+  geom_line(
+    data = spaghetti,
+    aes(x = time, y = value, group = subject_label, color = biomarker),
+    alpha = 0.4,
+    linewidth = 0.4
+  ) +
+  geom_ribbon(
+    data = pred_all,
+    aes(x = time, ymin = lwr, ymax = upr),
+    fill = "grey60",
+    alpha = 0.25
+  ) +
+  geom_line(
+    data = pred_all,
+    aes(x = time, y = fit),
+    color = "black",
+    linewidth = 1
+  ) +
+  scale_color_manual(values = traj_cols) +
+  facet_wrap(~ biomarker, nrow = 1, scales = "free_y") +
+  labs(
+    x = "years from baseline",
+    y = NULL
+  ) +
+  theme_classic(base_size = 12) +
+  theme(
+    legend.position = "none",
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    axis.title.x = element_text(margin = margin(t = 8))
+  )
+
+ggsave(
+  filename = "eoad_spaghetti_lme_trajectories.png",
+  plot = p,
+  width = 10,
+  height = 5,
+  dpi = 100
+)
+
+p <- p +
+  facet_wrap(
+    ~ biomarker,
+    nrow = 1,
+    scales = "free_y",
+    labeller = labeller(
+      biomarker = c(
+        "p-tau217" = "log(p-tau217)",
+        "Centiloid" = "Centiloid",
+        "Tau PET" = "Tau PET"
+      )
+    )
+  )
+p
+```
+
+
+```{r}
+  
+ptaum <- lmer(
+   log(ptau217) ~ time_yrs_ptau + (1|subject_label),
+  data = eoad,
+  na.action = na.omit,
+  REML = FALSE
+)
+summary(ptaum)
+standardise_parameters(ptaum)
+pr2 <- partR2(
+  ptaum,
+  R2_type = "marginal",
+  data = eoad,
+  nboot = NULL,  # start without bootstrap,
+  partvars = c(  "time_yrs_ptau")
+)
+
+pr2$R2 %>%
+  mutate(across(where(is.numeric), ~ round(.x, 3)))
+```
+```{r}
+
+amym <- lmer(
+   centiloid_wcbl ~ time_yrs_amy + (1|subject_label),
+  data = eoad,
+  na.action = na.omit,
+  REML = FALSE
+)
+summary(amym)
+standardise_parameters(amym)
+pr2 <- partR2(
+  amym,
+  R2_type = "marginal",
+  data = eoad,
+  nboot = NULL,  # start without bootstrap,
+  partvars = c(  "time_yrs_amy")
+)
+
+ 
+pr2$R2 %>%
+  mutate(across(where(is.numeric), ~ round(.x, 3)))
+```
+```{R}
+
+taum <- lmer(
+   scale(desikan_suvr) ~ time_yrs_tau + (1|subject_label),
+  data = eoad,
+  na.action = na.omit,
+  REML = FALSE
+)
+summary(taum)
+standardise_parameters(taum)
+pr2 <- partR2(
+  taum,
+  R2_type = "marginal",
+  data = eoad,
+  nboot = NULL,  # start without bootstrap,
+  partvars = c(  "time_yrs_tau")
+)
+
+pr2$R2 %>%
+  mutate(across(where(is.numeric), ~ round(.x, 3)))
+```
+```{r}
+
+print("centiloid ~ time + (1|ID)")
+r2_nakagawa(lmer(
+   centiloid_wcbl ~ day_to_baseline_amy + (1|subject_label),#+day_to_baseline_amy
+  data = eoad,
+  na.action = na.omit,
+  REML = FALSE
+))
+print("desikan suvr ~ time + (1|ID)")
+r2_nakagawa(lmer(
+   desikan_suvr ~ time_yrs_tau + (1|subject_label),#+time_yrs_tau
+  data = eoad,
+  na.action = na.omit,
+  REML = FALSE
+))
+
+print("log(ptau) ~ time + (1|ID)")
+r2_nakagawa(lmer(
+   log(ptau217) ~ time_yrs_ptau + (1|subject_label),#time_yrs_ptau
+  data = eoad,
+  na.action = na.omit,
+  REML = FALSE
+))
+```

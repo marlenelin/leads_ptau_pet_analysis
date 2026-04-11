@@ -1,0 +1,77 @@
+---
+title: "tau_compositeROI_long(added)"
+author: "marlene lin"
+date: "`r Sys.Date()`"
+output: html_document
+---
+# this is the same data we did the ggseg in just with composite 
+```{R import}
+
+library(nlme)
+library(dplyr)
+library(tibble)
+tau_eoad_long <- read.csv("tauPET_EOAD_longitudinal_compositeROI.csv")
+tau_eoad_long_v12 <- tau_eoad_long %>%
+  dplyr::filter(visit %in% c(1, 2))
+colnames(tau_eoad_long)
+```
+
+
+```{r run model} 
+
+fit_one_roi <- function(df, roi_col, id_col = "ID", time_col = "years_to_baseline") {
+
+  # check required columns and print what's missing (much better than stopifnot)
+  need <- c(id_col, time_col, roi_col)
+  missing <- setdiff(need, names(df))
+  if (length(missing) > 0) {
+    stop("Missing columns: ", paste(missing, collapse = ", "))
+  }
+
+  dd <- df %>%
+    transmute(
+      ID   = .data[[id_col]],
+      time_years = .data[[time_col]],
+      y          = .data[[roi_col]]
+    )
+
+  m <- nlme::lme(
+    fixed  = y ~ time_years,
+    random = ~ 1 | ID,
+    data   = dd,
+    method = "REML",
+    na.action = na.omit,
+    control = nlme::lmeControl(opt = "optim")
+  )
+
+  tt <- summary(m)$tTable
+
+  tibble(
+    roi          = roi_col,
+    intercept    = unname(tt["(Intercept)", "Value"]),
+   # intercept_se = unname(tt["(Intercept)", "Std.Error"]),
+    intercept_p  = unname(tt["(Intercept)", "p-value"]),
+    slope        = unname(tt["time_years", "Value"]),
+   # slope_se     = unname(tt["time_years", "Std.Error"]),
+    slope_p      = unname(tt["time_years", "p-value"])
+  )
+}
+
+```
+
+```{r fit all}
+res_meta    <- fit_one_roi(tau_eoad_long, "MetaROI_SUVR_infcblgm")
+res_frontal <- fit_one_roi(tau_eoad_long, "FrontalROI_SUVR_infcblgm")
+
+bind_rows(res_meta, res_frontal)
+
+
+```
+```{r fit 12only}
+res_meta    <- fit_one_roi(tau_eoad_long_v12, "MetaROI_SUVR_infcblgm")
+res_frontal <- fit_one_roi(tau_eoad_long_v12, "FrontalROI_SUVR_infcblgm")
+
+bind_rows(res_meta, res_frontal)
+
+
+```

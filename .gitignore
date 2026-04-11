@@ -1,0 +1,11 @@
+data/*
+notebooks/data_cleaning.ipynb
+notebooks/merging.ipynb
+outlines/
+references/
+result_files/
+renewal_figure_petcore/
+.Rhistory
+tau26/
+
+

@@ -1,0 +1,354 @@
+# readin 
+```{r}
+library(readr)
+library(dplyr)
+library(lubridate)
+library(lme4)
+library(broom.mixed)
+library(brms)
+library(tibble)
+library(stringr) 
+library(ggplot2)
+# ============================================================ 
+library(lmerTest)     # p-values for fixed effects
+library(performance)  # marginal R^2 
+
+dat_path <- "/Users/mlin2/Desktop/RabLab/tasks/concurrent/merged_dat/"
+# filter to only EOAD
+dat <- read_csv(paste0(dat_path, "ptau_merged_all_20260214_wROI.csv")) %>%
+  filter(CohortAssgn %in% c("EOAD")) 
+nrow(dat)
+```
+
+# select only those with at least one follow up in all four 
+```{r}
+# select only those with at least one follow up (>= 2 timepoints) in all four modalities
+
+df_long <- dat %>%
+  mutate(
+    #ptau_date = as.Date(ptau_date),
+   # amy_date  = as.Date(amy_date),
+    #tau_date  = as.Date(tau_date),
+    cdr_date  = as.Date(cdr_date)
+  ) %>%
+  group_by(subject_label) %>%
+  summarise(
+    n_ptau = n_distinct(ptau_date[!is.na(ptau_date)]),
+    n_amy  = n_distinct(amy_date[!is.na(amy_date)]),
+    n_tau  = n_distinct(tau_date[!is.na(tau_date)]),
+    n_cdr  = n_distinct(cdr_date[!is.na(cdr_date)]),
+    .groups = "drop"
+  ) %>%
+  filter(
+ #   n_ptau >= 2,
+  #  n_amy  >= 2,
+   # n_tau  >= 2,
+    n_cdr  >= 2
+  ) %>%
+  select(subject_label) %>%
+  inner_join(dat, by = "subject_label")
+
+n_distinct(df_long$subject_label)
+```
+# do some renaming because i hate r studio interface
+```{r}
+ 
+ 
+# ---- detect DK ROI SUVR columns in dat ---- 
+dk_pat <- "^ctx_(lh|rh)?_?.*_SUVR$"
+
+dk_cols <- names(dat)[str_detect(names(dat), dk_pat)] 
+# ---- construct df with automatic DK ROI columns and renaming ----
+df <- df_long %>% 
+  rename(
+    ID    = subject_label,
+    ptau  = `pTau217.Conc..pg.mL.`,
+    centiloid    = Centiloids_wcbl, 
+    educ_bl = years_education_BL,
+    age_bl = age_at_pet_BL, 
+    sex_bl = sex_BL,
+    apoe_bl = apoe4_alleles_BL,
+    CDRSB = CDRSUM,
+    ptau_bl = `pTau217.Conc..pg.mL._BL`,
+    centiloid_bl    = Centiloids_wcbl_BL, 
+    CDRSB_bl    = CDRSUM_BL, 
+  )  
+ 
+names(df) <- names(df) %>%
+  str_replace("^ctx_", "") %>%                 # drop ctx_
+  str_replace("(_FTP)?_SUVR$", "_tau")          # replace _SUVR or _FTP_SUVR -> _tau
+
+df$log_ptau = log(df$ptau)
+df$log_ptau_bl = log(df$ptau_bl)
+```
+
+ 
+# saving df_long
+```{R}
+#write.csv(df,"joint_model_191_20260214wROI.csv")
+getwd()
+```
+
+# individual LME (random slope and intercept)
+```{r} 
+fit_cdrsb_biomarker_for_forest <- function(d,
+                                          biomarker,
+                                          timevar = "cdr_date_to_baseline",
+                                          id = "ID",
+                                          outcome = "CDRSB",
+                                          covars = NULL,
+                                          ci_method = "Wald",
+                                          REML = TRUE,
+                                          # for display
+                                          clean_regex = c("_FTP_SUVR_BL$", "_SUVR_BL$", "_BL$", "_bl$"),
+                                          color_map = NULL) {
+  # ---- checks + complete cases ----
+  needed <- unique(c(outcome, id, timevar, biomarker, covars))
+  miss <- setdiff(needed, names(d))
+  if (length(miss) > 0) stop("Missing columns: ", paste(miss, collapse = ", "))
+
+  dd <- d %>%
+    dplyr::select(dplyr::all_of(needed)) %>%
+    tidyr::drop_na()
+
+  # ---- make biomarker z (predictor-standardized only) ----
+  biom_z <- paste0(biomarker, "_z")
+  dd[[biom_z]] <- as.numeric(scale(dd[[biomarker]]))
+
+  # ---- formula builders ----
+  rand_term <- paste0("(1 + ", timevar, " | ", id, ")")
+
+  build_forms <- function(x) {
+    full <- paste0(x, " * ", timevar)
+    red  <- paste0(x, " + ", timevar)
+    if (!is.null(covars) && length(covars) > 0) {
+      full <- paste(c(full, covars), collapse = " + ")
+      red  <- paste(c(red,  covars), collapse = " + ")
+    }
+    list(
+      full = stats::as.formula(paste0(outcome, " ~ ", full, " + ", rand_term)),
+      red  = stats::as.formula(paste0(outcome, " ~ ", red,  " + ", rand_term))
+    )
+  }
+
+  get_term <- function(sm, x) {
+    t1 <- paste0(x, ":", timevar)
+    t2 <- paste0(timevar, ":", x)
+    if (t1 %in% rownames(sm)) return(t1)
+    if (t2 %in% rownames(sm)) return(t2)
+    NA_character_
+  }
+
+  # ---- fit RAW models ----
+  f_raw <- build_forms(biomarker)
+  m_full_raw <- lmerTest::lmer(f_raw$full, data = dd, REML = REML)
+  m_red_raw  <- lmerTest::lmer(f_raw$red,  data = dd, REML = REML)
+
+  sm_raw <- summary(m_full_raw)$coefficients
+  term_raw <- get_term(sm_raw, biomarker)
+  if (is.na(term_raw)) stop("Interaction term not found (raw) for ", biomarker)
+
+  beta_raw <- unname(sm_raw[term_raw, "Estimate"])
+  p_raw    <- unname(sm_raw[term_raw, "Pr(>|t|)"])
+  ci_raw   <- confint(m_full_raw, parm = term_raw, method = ci_method)
+  ci_lo_raw <- ci_raw[1]; ci_hi_raw <- ci_raw[2]
+
+  # ---- fit Z models (biomarker standardized only) ----
+  f_z <- build_forms(biom_z)
+  m_full_z <- lmerTest::lmer(f_z$full, data = dd, REML = REML)
+  m_red_z  <- lmerTest::lmer(f_z$red,  data = dd, REML = REML)
+
+  sm_z <- summary(m_full_z)$coefficients
+  term_z <- get_term(sm_z, biom_z)
+  if (is.na(term_z)) stop("Interaction term not found (z) for ", biomarker)
+
+  beta_z <- unname(sm_z[term_z, "Estimate"])
+  p_z    <- unname(sm_z[term_z, "Pr(>|t|)"])
+  ci_z   <- confint(m_full_z, parm = term_z, method = ci_method)
+  ci_lo_z <- ci_z[1]; ci_hi_z <- ci_z[2]
+
+  # ---- partial R2 interaction = Δ marginal R2 (Nakagawa) ----
+  r2_full <- performance::r2_nakagawa(m_full_z)
+  r2_red  <- performance::r2_nakagawa(m_red_z)
+  delta_r2m <- unname(r2_full$R2_marginal - r2_red$R2_marginal)
+
+  # ---- misc ----
+  conv_raw <- is.null(m_full_raw@optinfo$conv$lme4$messages)
+  conv_z   <- is.null(m_full_z@optinfo$conv$lme4$messages)
+
+  n <- nrow(dd)
+  n_id <- dplyr::n_distinct(dd[[id]])
+
+  # label cleaning
+  biomarker_clean <- biomarker
+  for (rgx in clean_regex) biomarker_clean <- stringr::str_remove(biomarker_clean, rgx)
+
+  # color (optional mapping)
+  color <- "blue"
+  if (!is.null(color_map)) {
+    if (biomarker %in% names(color_map)) color <- unname(color_map[[biomarker]])
+  }
+
+  fmt_p <- function(p) ifelse(is.na(p), "", ifelse(p < 0.001, "<0.001", sprintf("%.2f", p)))
+
+  annot <- sprintf(
+  "%.2f [%.2f–%.2f], %.2f,%s",
+  beta_z, ci_lo_z, ci_hi_z,
+  delta_r2m,p_z
+)
+
+  tibble::tibble(
+    biomarker = biomarker,
+    biomarker_clean = biomarker_clean,
+    color = color,
+
+    beta_z = beta_z,
+    ci_lo_z = ci_lo_z,
+    ci_hi_z = ci_hi_z,
+    p_z = p_z,
+
+    beta_raw = beta_raw,
+    ci_lo_raw = ci_lo_raw,
+    ci_hi_raw = ci_hi_raw,
+    p_raw = p_raw,
+
+    r2_interaction_marg = delta_r2m,
+
+    n = n,
+    n_id = n_id,
+    converged_raw = conv_raw,
+    converged_z = conv_z,
+
+    annot = annot
+  )
+}
+```
+
+
+# fitting 
+```{r}
+# biomarkers to test
+dk_tau_list <- c(
+  "bankssts_SUVR",
+  "caudalanteriorcingulate_SUVR",
+  "caudalmiddlefrontal_SUVR",
+#  "cuneus_SUVR",
+  "entorhinal_SUVR",
+  "fusiform_SUVR",
+  "inferiorparietal_SUVR",
+  "inferiortemporal_SUVR",
+  "isthmuscingulate_SUVR",
+  "lateraloccipital_SUVR",
+  "lateralorbitofrontal_SUVR",
+ # "lingual_SUVR",
+  "medialorbitofrontal_SUVR",
+  "middletemporal_SUVR",
+  "parahippocampal_SUVR",
+  "paracentral_SUVR",
+  "parsopercularis_SUVR",
+  "parsorbitalis_SUVR",
+  "parstriangularis_SUVR",
+#  "pericalcarine_SUVR",
+  "postcentral_SUVR",
+  "posteriorcingulate_SUVR",
+  "precentral_SUVR",
+  "precuneus_SUVR",
+  "rostralanteriorcingulate_SUVR",
+  "rostralmiddlefrontal_SUVR",
+  "superiorfrontal_SUVR",
+  "superiorparietal_SUVR",
+  "superiortemporal_SUVR",
+  "supramarginal_SUVR",
+  "frontalpole_SUVR",
+  "temporalpole_SUVR",  
+  "transversetemporal_SUVR",
+  "insula_SUVR"
+)  
+df$cortical <- df$desikan_FTP_SUVR_BL
+biomarkers <- c(paste0(dk_tau_list, "_BL"),
+"log_ptau_bl","centiloid_bl","cortical")
+ 
+# covariates
+covariates <-c()#"age_bl", "educ_bl",  "sex_bl", "apoe_bl")
+
+```
+
+# run across models
+```{r} 
+outcome <- "CDRSB"
+id      <- "ID"
+timevar <- "cdr_date_to_baseline"
+color_map <- c(
+  centiloid_bl = "green",
+  log_ptau_bl      = "orange",
+  cortical = "black"
+)
+
+df_interactions <- purrr::map_dfr(
+  biomarkers,
+  ~ fit_cdrsb_biomarker_for_forest(
+    d = df,
+    biomarker = .x,
+    timevar = timevar,
+    id = id,
+    outcome = outcome,
+    covars = covariates,
+    ci_method = CI_METHOD,
+    REML = FALSE,                 # keep FALSE for model comparisons / ΔR²m
+    color_map = color_map
+  )
+)
+```
+
+
+# plot interaction function
+```{r}
+
+plot_interaction_forest <- function(df_interactions,
+                                   x = "beta_z",
+                                   xmin = "ci_lo_z",
+                                   xmax = "ci_hi_z",
+                                   label = "biomarker_clean",
+                                   color = "color",
+                                   annot = "annot",
+                                   xlab = "Interaction effect on CDRSB slope per 1 SD higher baseline biomarker (βz)",
+                                   base_size = 14,
+                                   annot_size = 4.2) {
+
+  plot_dat <- df_interactions %>%
+    dplyr::arrange(.data[[x]]) %>%
+    dplyr::mutate(!!label := factor(.data[[label]], levels = .data[[label]]))
+
+  range_x <- range(c(plot_dat[[xmin]], plot_dat[[xmax]]), na.rm = TRUE)
+  x_span  <- diff(range_x)
+  x_pad   <- 0.45 * x_span
+  x_text  <- range_x[2] + 0.08 * x_span
+
+  ggplot2::ggplot(plot_dat, ggplot2::aes(x = .data[[x]], y = .data[[label]])) +
+    ggplot2::geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+    ggplot2::geom_errorbarh(
+      ggplot2::aes(xmin = .data[[xmin]], xmax = .data[[xmax]], color = .data[[color]]),
+      height = 0.2, linewidth = 0.8
+    ) +
+    ggplot2::geom_point(ggplot2::aes(color = .data[[color]]), size = 2.6) +
+    ggplot2::geom_text(ggplot2::aes(x = x_text, label = .data[[annot]]),
+                       hjust = 0, size = annot_size, lineheight = 0.95) +
+    ggplot2::scale_color_identity() +
+    ggplot2::coord_cartesian(
+      xlim = c(range_x[1] - 0.10 * x_span,
+               range_x[2] + 2.20 * x_pad)
+    ) +
+    ggplot2::labs(x = xlab, y = NULL) +
+    ggplot2::theme_classic(base_size = base_size) +
+    ggplot2::theme(
+      axis.text.y = ggplot2::element_text(size = base_size + 2),
+      plot.margin = ggplot2::margin(5.5, 320, 5.5, 5.5)
+    )
+}
+
+```
+
+```{r}
+p <- plot_interaction_forest(df_interactions)
+
+```

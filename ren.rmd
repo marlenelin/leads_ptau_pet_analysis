@@ -1,0 +1,685 @@
+---
+title: "renewal_questions"
+author: "marlene lin"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Import
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(nlme)
+library(lubridate) 
+library(lmerTest) 
+library(stringr)
+library(purrr)
+library(nlme)
+library(tibble) 
+library(ggseg)
+amy <- read.csv("~/Desktop/RabLab/tasks/concurrent/LEADS-PETCore-quarterly-report_AMYLOID_2025-12-18.csv")
+tau <- read.csv("~/Desktop/RabLab/tasks/concurrent/LEADS-PETCore-quarterly-report_TAU_2025-12-18.csv")
+elg <- read.csv("~/Desktop/RabLab/tasks/concurrent/LEADS_Eligibility_list.csv") 
+amyelg <- read.csv("~/Desktop/RabLab/tasks/concurrent/leads_codebook_study_data_amyelg.csv")
+tx <- read.csv("~/Desktop/RabLab/tasks/concurrent/leads_codebook_study_data_antiamytx.csv")
+print(n_distinct(amy$ID))
+print(n_distinct(tau$ID))
+
+```
+
+```{r}
+amy <- amy[amy$ID %in% elg$subject_label, ]
+tau <- tau[tau$ID %in% elg$subject_label, ] #safety. 
+print(n_distinct(amy$ID))
+print(n_distinct(tau$ID))
+print(n_distinct(tau$ID)) 
+#amy <- amy %>% filter(!(ID %in% antiamy$subject_label))
+#tau <- tau %>% filter(!(ID %in% antiamy$subject_label))
+#print(n_distinct(amy$ID))
+#print(n_distinct(tau$ID)) 
+
+```
+# Q1: Rates of amyloid PET+ in CU ?
+```{r Q1}
+## Based on quarterly report from 25 Dec. 18th
+## SA1 in R: baseline = earliest Amyloid_PET_Date per ID,
+## CU defined as CohortAssgn == "CN",
+## amyloid+ defined as Centiloids_wcbl > 18,
+## plus Wilson 95% CI.
+
+# ----------------------------
+# 0) CONFIG: rename columns here if needed
+# ----------------------------
+colmap <- list(
+  ID = "ID",
+  Amyloid_PET_Date = "Amyloid_PET_Date",
+  CohortAssgn = "CohortAssgn",
+  Centiloids_wcbl = "Centiloids_wcbl"
+)
+
+ID     <- colmap$ID
+DATE   <- colmap$Amyloid_PET_Date
+COHORT <- colmap$CohortAssgn
+CL     <- colmap$Centiloids_wcbl
+
+# ----------------------------
+# 1) Clean + parse date (YYYY-MM-DD)
+# ----------------------------
+a <- amy %>%
+  mutate(
+    ID_clean = trimws(as.character(.data[[ID]])),
+    cohort_clean = trimws(as.character(.data[[COHORT]])),
+    pet_date = as.Date(.data[[DATE]]),       # YYYY-MM-DD
+    centiloid = as.numeric(.data[[CL]])
+  ) %>%
+  filter(!is.na(ID_clean) & ID_clean != "")
+
+# check parse fail
+bad_date <- a %>% filter(is.na(pet_date) & !is.na(.data[[DATE]]))
+cat(sprintf("[SA1] Date parse failures: %d rows\n", nrow(bad_date)))
+if (nrow(bad_date) > 0) {
+  print(bad_date %>% select(!!ID, !!DATE) %>% head(20))
+}
+
+# ----------------------------
+# 2) Check CohortAssgn is stable (should be)
+# ----------------------------
+unstable <- a %>%
+  group_by(ID_clean) %>%
+  summarise(n_levels = n_distinct(na.omit(cohort_clean)), .groups = "drop") %>%
+  filter(n_levels > 1)
+
+if (nrow(unstable) > 0) {
+  print(head(unstable, 20))
+}
+
+# ----------------------------
+# 3) Baseline = earliest PET date per ID (one record per ID)
+# ----------------------------
+sprintf("Missing PET date: %d",sum(is.na(amy$pet_date)))
+
+baseline <- a %>%
+  filter(!is.na(pet_date)) %>%
+  arrange(ID_clean, pet_date, centiloid) %>%  
+  group_by(ID_clean) %>%
+  slice(1) %>%                                # earliest after sorting
+  ungroup()
+
+cat(sprintf("[SA1] Total baseline rows (unique IDs): %d\n", n_distinct(baseline$ID_clean)))
+
+# ----------------------------
+# 4) Amyloid+ in CN
+# ----------------------------
+cu <- baseline %>%
+  filter(cohort_clean == "CN") %>%
+  mutate(amy_pos = ifelse(is.na(centiloid), NA, centiloid > 18))
+
+cu_valid <- cu %>% filter(!is.na(amy_pos))
+
+n_cu       <- n_distinct(cu$ID_clean)
+n_cu_valid <- n_distinct(cu_valid$ID_clean)
+n_pos      <- sum(cu_valid$amy_pos)
+
+prop <- if (n_cu_valid > 0) n_pos / n_cu_valid else NA_real_
+
+cat(sprintf("[SA1] CU baseline (CN) unique IDs: %d\n", n_cu))
+cat(sprintf("[SA1] CU baseline with non-missing CL: %d\n", n_cu_valid))
+cat(sprintf("[SA1] CU baseline amyloid+ (CL>18): %d\n", n_pos))
+if (!is.na(prop)) {
+  cat(sprintf("[SA1] CU baseline amyloid+ rate: %.2f%%\n", 100 * prop))
+} else {
+  cat("[SA1] CU baseline amyloid+ rate: NA\n")
+}
+
+# ----------------------------
+# 5) 95% CI - Exact binomial CI 
+# ----------------------------
+if (n_cu_valid > 0) {
+  bt <- binom.test(n_pos, n_cu_valid)
+  ci <- bt$conf.int
+  cat(sprintf("[SA1] 95%% CI (binom.test): %.2f%% – %.2f%%\n", 100 * ci[1], 100 * ci[2]))
+}
+```
+As of December 18, 2025, the amyloid positivity rate among cognitively normal participants was 10.42% (n = 10/96; 95% CI: 5.11–18.32%), based on wcbl Centiloid > 18.
+
+```{r ever?}
+amy_pos_ever <- a %>%
+  filter(!is.na(centiloid)) %>%
+  filter(CohortAssgn =='CN') %>%
+  group_by(ID_clean) %>%
+  summarise(
+    amy_pos_ever = any(centiloid > 18),
+    .groups = "drop"
+  )
+amy_pos_ever %>% filter(amy_pos_ever == TRUE)
+
+```
+
+# Q2: Average annual change in amyloid and tau PET (LME measures)
+## amyloid
+```{R}
+
+amy <- amy %>% filter(ID %in% amyelg$subject_label[amyelg$amyelg == 1])
+tau <- tau %>% filter(ID %in% amyelg$subject_label[amyelg$amyelg == 1])
+print(n_distinct(amy$ID))
+print(n_distinct(tau$ID)) 
+
+# ----------------------------
+# 0) Load internal treatment flags (source of truth)
+# ----------------------------
+internal_amy <- read.csv("~/Desktop/RabLab/tasks/concurrent/LEADS_FBB_wcbl_ROI-means_2025-12-18-10-20-06.csv",
+                         stringsAsFactors = FALSE)
+internal_tau <- read.csv("~/Desktop/RabLab/tasks/concurrent/LEADS_FTP_infcblgm_ROI-means_2025-12-18-10-20-06.csv",
+                         stringsAsFactors = FALSE)
+
+internal_amy_flags <- internal_amy %>%
+  transmute(
+    ID_clean = trimws(as.character(subject_id)),
+    visit_date = as.Date(pet_date, format = "%Y-%m-%d"),
+    antiamy_tx_received = as.integer(antiamy_tx_received)
+  ) %>%
+  distinct(ID_clean, visit_date, .keep_all = TRUE)
+
+internal_tau_flags <- internal_tau %>%
+  transmute(
+    ID_clean = trimws(as.character(subject_id)),
+    visit_date = as.Date(pet_date, format = "%Y-%m-%d"),
+    antiamy_tx_received = as.integer(antiamy_tx_received)
+  ) %>%
+  distinct(ID_clean, visit_date, .keep_all = TRUE)
+
+# ----------------------------
+# 1) Use YOUR earlier amy_df / tau_df format
+#    Assumes columns:
+#      amy_df: ID, Amyloid_PET_Date
+#      tau_df: ID, Tau_PET_Date
+# ----------------------------
+amy_df <- amy
+tau_df <- tau
+
+amy_tagged <- amy_df %>%
+  mutate(
+    ID_clean = trimws(as.character(ID)),
+    visit_date = as.Date(Amyloid_PET_Date, format = "%Y-%m-%d")
+  ) %>%
+  left_join(internal_amy_flags, by = c("ID_clean", "visit_date"))
+
+tau_tagged <- tau_df %>%
+  mutate(
+    ID_clean = trimws(as.character(ID)),
+    visit_date = as.Date(Tau_PET_Date, format = "%Y-%m-%d")
+  ) %>%
+  left_join(internal_tau_flags, by = c("ID_clean", "visit_date"))
+
+# ----------------------------
+# 2) Counts BEFORE filtering + match diagnostics
+# ----------------------------
+cat(sprintf("[Amy] rows before: %d | unique IDs: %d\n",
+            nrow(amy_tagged), n_distinct(amy_tagged$ID_clean)))
+cat(sprintf("[Tau] rows before: %d | unique IDs: %d\n",
+            nrow(tau_tagged), n_distinct(tau_tagged$ID_clean)))
+
+amy_matched <- sum(!is.na(amy_tagged$antiamy_tx_received))
+tau_matched <- sum(!is.na(tau_tagged$antiamy_tx_received))
+
+cat(sprintf("[Amy] rows matched to internal flags: %d of %d\n", amy_matched, nrow(amy_tagged)))
+cat(sprintf("[Tau] rows matched to internal flags: %d of %d\n", tau_matched, nrow(tau_tagged)))
+
+amy_treated_rows <- sum(amy_tagged$antiamy_tx_received == 1, na.rm = TRUE)
+tau_treated_rows <- sum(tau_tagged$antiamy_tx_received == 1, na.rm = TRUE)
+
+cat(sprintf("[Amy] rows flagged treated (antiamy_tx_received==1): %d\n", amy_treated_rows))
+cat(sprintf("[Tau] rows flagged treated (antiamy_tx_received==1): %d\n", tau_treated_rows))
+
+# ----------------------------
+# 3) FILTER: remove rows where internal flag says treated (=1)
+#     Keep rows with 0 or NA (unknown / not found), consistent with dashboard logic
+# ----------------------------
+amy_filt <- amy_tagged %>%
+  filter(is.na(antiamy_tx_received) | antiamy_tx_received == 0) %>%
+  select(-antiamy_tx_received)  # optional: drop flag column
+
+tau_filt <- tau_tagged %>%
+  filter(is.na(antiamy_tx_received) | antiamy_tx_received == 0) %>%
+  select(-antiamy_tx_received)  # optional: drop flag column
+
+# ----------------------------
+# 4) Counts AFTER filtering
+# ----------------------------
+cat(sprintf("[Amy] rows after: %d | unique IDs: %d | rows removed: %d\n",
+            nrow(amy_filt), n_distinct(amy_filt$ID_clean), nrow(amy_tagged) - nrow(amy_filt)))
+cat(sprintf("[Tau] rows after: %d | unique IDs: %d | rows removed: %d\n",
+            nrow(tau_filt), n_distinct(tau_filt$ID_clean), nrow(tau_tagged) - nrow(tau_filt)))
+
+# If you want to overwrite:
+amy <- amy_filt
+tau <- tau_filt
+
+```
+
+```{r}   
+
+# ============================================================
+# 1) dat
+# ============================================================
+colmap <- list(
+  ID = "ID",
+  CohortAssgn = "CohortAssgn",
+
+  # Amyloid
+  Amyloid_PET_Date = "Amyloid_PET_Date",
+  Centiloids_wcbl = "Centiloids_wcbl",
+  Centiloids_compositeref = "Centiloids_compositeref",
+
+  # Tau
+  Tau_PET_Date = "Tau_PET_Date",
+  MetaROI_SUVR_infcblgm = "MetaROI_SUVR_infcblgm"
+)
+
+ID     <- colmap$ID
+COHORT <- colmap$CohortAssgn
+
+A_DATE <- colmap$Amyloid_PET_Date
+A_Y1   <- colmap$Centiloids_wcbl
+A_Y2   <- colmap$Centiloids_compositeref
+
+T_DATE <- colmap$Tau_PET_Date
+T_Y1   <- colmap$MetaROI_SUVR_infcblgm
+
+amy_df <- amy
+tau_df <- tau
+
+# ============================================================
+# 2) model
+# ============================================================
+
+amy_eoad_long <- amy_df %>%
+  mutate(
+    ID_clean = trimws(as.character(.data[[ID]])),
+    cohort_clean = trimws(as.character(.data[[COHORT]])),
+    visit_date = as.Date(.data[[A_DATE]]),  # expects YYYY-MM-DD
+    Centiloids_wcbl = as.numeric(.data[[A_Y1]]),
+    Centiloids_compositeref = as.numeric(.data[[A_Y2]])
+  ) %>%
+  filter(!is.na(ID_clean) & ID_clean != "") %>%
+  filter(cohort_clean == "EOAD") %>%
+  filter(!is.na(visit_date)) %>%
+  group_by(ID_clean) %>%
+  arrange(visit_date, .by_group = TRUE) %>%
+  mutate(
+    time_years = as.numeric(difftime(visit_date, first(visit_date), units = "days")) / 365.25,
+    time_years = round(time_years, 2),    
+    n_visits = n()
+  ) %>%
+  ungroup() %>%
+  filter(n_visits >= 2)
+
+cat(sprintf("[SA2] Amyloid EOAD IDs with >=2 visits: %d\n", n_distinct(amy_eoad_long$ID_clean)))
+
+tau_eoad_long <- tau_df %>%
+  mutate(
+    ID_clean = trimws(as.character(.data[[ID]])),
+    cohort_clean = trimws(as.character(.data[[COHORT]])),
+    visit_date = as.Date(.data[[T_DATE]]),  # expects YYYY-MM-DD
+    MetaROI_SUVR_infcblgm = as.numeric(.data[[T_Y1]])
+  ) %>%
+  filter(!is.na(ID_clean) & ID_clean != "") %>%
+  filter(cohort_clean == "EOAD") %>%
+  filter(!is.na(visit_date)) %>%
+  group_by(ID_clean) %>%
+  arrange(visit_date, .by_group = TRUE) %>%
+  mutate(
+    time_years = as.numeric(difftime(visit_date, first(visit_date), units = "days")) / 365.25,
+    time_years = round(time_years, 2),    
+    n_visits = n()
+  ) %>%
+  ungroup() %>%
+  filter(n_visits >= 2)
+
+cat(sprintf("[SA2] Tau EOAD IDs with >=2 visits: %d\n", n_distinct(tau_eoad_long$ID_clean)))
+
+# ============================================================
+# 3) random intercept model + getting slope
+# ============================================================
+
+fit_lme_ri <- function(df_long, outcome_col,
+                       id_col = "ID_clean", time_col = "time_years",
+                       method = "REML") {
+
+  d <- df_long %>%
+    select(all_of(c(id_col, time_col, outcome_col))) %>%
+    rename(ID = all_of(id_col), time = all_of(time_col), y = all_of(outcome_col)) %>%
+    filter(!is.na(y) & !is.na(time))
+
+  m <- nlme::lme(
+    fixed = y ~ time,
+    random = ~ 1 | ID,
+    data = d,
+    method = method
+  )
+
+  tt <- summary(m)$tTable
+  slope <- unname(tt["time", "Value"])
+  se    <- unname(tt["time", "Std.Error"])
+  pval  <- unname(tt["time", "p-value"])
+
+  # Wald 95% CI
+  ci_low  <- slope - 1.96 * se
+  ci_high <- slope + 1.96 * se
+
+  list(
+    outcome = outcome_col,
+    n_ids = n_distinct(d$ID),
+    n_obs = nrow(d),
+    model = m,
+    slope = slope,
+    se = se,
+    p = pval,
+    ci_low = ci_low,
+    ci_high = ci_high,
+    AIC = AIC(m),
+    BIC = BIC(m)
+  )
+}
+
+print_rate_lme <- function(fit_obj, label = NULL, digits = 3) {
+  if (is.null(label)) label <- fit_obj$outcome
+  cat("\n", "==== ", label, " (nlme::lme, RI only) ====\n", sep = "")
+  cat(sprintf("N IDs: %d | N obs: %d\n", fit_obj$n_ids, fit_obj$n_obs))
+  cat(sprintf(
+    "Slope: %.*f per year (SE %.*f), 95%% CI [%.*f, %.*f], p = %.2g\n",
+    digits, fit_obj$slope, digits, fit_obj$se, digits, fit_obj$ci_low, digits, fit_obj$ci_high, fit_obj$p
+  ))
+  cat(sprintf("AIC: %.2f | BIC: %.2f\n", fit_obj$AIC, fit_obj$BIC))
+}
+
+# ============================================================
+# 4) print
+# ============================================================
+
+fits_sa2 <- list()
+
+# Amyloid (EOAD)
+fits_sa2$amyloid_wcbl_ri <- fit_lme_ri(amy_eoad_long, "Centiloids_wcbl", method = "REML")
+fits_sa2$amyloid_comp_ri <- fit_lme_ri(amy_eoad_long, "Centiloids_compositeref", method = "REML")
+
+print_rate_lme(fits_sa2$amyloid_wcbl_ri, "Amyloid: Centiloids_wcbl")
+print_rate_lme(fits_sa2$amyloid_comp_ri, "Amyloid: Centiloids_compositeref")
+
+# Tau (EOAD)
+fits_sa2$tau_metaROI_ri <- fit_lme_ri(tau_eoad_long, "MetaROI_SUVR_infcblgm", method = "REML")
+
+print_rate_lme(fits_sa2$tau_metaROI_ri, "Tau: MetaROI_SUVR_infcblgm")
+
+```
+ 
+```{r}
+# ============================================================
+# 5) Spaghetti plots + thick fixed-effect LME line
+#    + 95% CI band for fixed effect line (Wald, from fixef/vcov)
+#    + y-axis limits (CL: 0–200; SUVR: 1–4.5)
+# ============================================================
+ 
+
+# ---- helper: fixed-effect line + 95% CI band from nlme::lme ----
+make_fixed_line_ci <- function(fit_obj, df_long,
+                               time_col = "time_years",
+                               n = 200, alpha = 0.05) {
+
+  t_min <- min(df_long[[time_col]], na.rm = TRUE)
+  t_max <- max(df_long[[time_col]], na.rm = TRUE)
+
+  newdat <- data.frame(time = seq(t_min, t_max, length.out = n))
+
+  # fixed effects and their covariance
+  beta <- nlme::fixef(fit_obj$model)             # (Intercept), time
+  V    <- stats::vcov(fit_obj$model)             # 2x2 var-cov for fixed effects
+
+  # design matrix for fixed effects
+  X <- cbind(1, newdat$time)
+  colnames(X) <- names(beta)
+
+  # fitted mean
+  newdat$y_hat <- as.numeric(X %*% beta)
+
+  # SE of fitted mean at each time: sqrt(diag(X V X'))
+  newdat$se_hat <- sqrt(diag(X %*% V %*% t(X)))
+
+  z <- qnorm(1 - alpha/2)
+  newdat$y_low  <- newdat$y_hat - z * newdat$se_hat
+  newdat$y_high <- newdat$y_hat + z * newdat$se_hat
+
+  newdat
+}
+
+# ---- helper: slope CI (Wald) from model summary (already in fit_obj)
+fmt_slope_ci <- function(fit_obj, digits = 3) {
+  sprintf("Slope = %.*f / year (95%% CI: %.*f, %.*f), p = %.2g",
+          digits, fit_obj$slope, digits, fit_obj$ci_low, digits, fit_obj$ci_high, fit_obj$p)
+}
+
+# ---- helper: spaghetti + thick fixed line + CI ribbon ----
+plot_spaghetti_with_lme_ci <- function(df_long, fit_obj,
+                                       outcome_col,
+                                       id_col = "ID_clean", time_col = "time_years",
+                                       xlab = "Years from baseline",
+                                       ylab = outcome_col,
+                                       title = NULL,
+                                       ylim = NULL) {
+
+  d <- df_long %>%
+    select(all_of(c(id_col, time_col, outcome_col))) %>%
+    rename(ID = all_of(id_col), time = all_of(time_col), y = all_of(outcome_col)) %>%
+    filter(!is.na(ID) & !is.na(time) & !is.na(y)) %>%
+    arrange(ID, time)
+
+  fixed_line <- make_fixed_line_ci(fit_obj, d, time_col = "time", n = 200)
+
+  subtitle_txt <- fmt_slope_ci(fit_obj, digits = 3)
+
+  p <- ggplot(d, aes(x = time, y = y, group = ID)) +
+    geom_line(alpha = 0.25, linewidth = 0.4) +
+    geom_point(alpha = 0.35, size = 0.8) +
+    geom_ribbon(
+      data = fixed_line,
+      aes(x = time, ymin = y_low, ymax = y_high),
+      inherit.aes = FALSE,
+      alpha = 0.18
+    ) +
+    geom_line(
+      data = fixed_line,
+      aes(x = time, y = y_hat),
+      inherit.aes = FALSE,
+      linewidth = 1.4
+    ) +
+    labs(
+      title = title,
+      subtitle = subtitle_txt,
+      x = xlab,
+      y = ylab
+    ) +
+    theme_minimal() +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(face = "bold")
+    )
+
+  if (!is.null(ylim)) {
+    p <- p + coord_cartesian(ylim = ylim)
+  }
+
+  p
+}
+
+# ----------------------------
+# Amyloid: Centiloids_wcbl (y-range 0–200)
+# ----------------------------
+p_amy_wcbl <- plot_spaghetti_with_lme_ci(
+  df_long = amy_eoad_long,
+  fit_obj = fits_sa2$amyloid_wcbl_ri,
+  outcome_col = "Centiloids_wcbl",
+  ylab = "Centiloids (wcbl)",
+  title = "EOAD Amyloid: Centiloids_wcbl (spaghetti + LME fixed effect ±95% CI)",
+  ylim = c(0, 200)
+)
+print(p_amy_wcbl)
+
+# ----------------------------
+# Amyloid: Centiloids_compositeref (y-range 0–200)
+# ----------------------------
+p_amy_comp <- plot_spaghetti_with_lme_ci(
+  df_long = amy_eoad_long,
+  fit_obj = fits_sa2$amyloid_comp_ri,
+  outcome_col = "Centiloids_compositeref",
+  ylab = "Centiloids (composite ref)",
+  title = "EOAD Amyloid: Centiloids_compositeref (spaghetti + LME fixed effect ±95% CI)",
+  ylim = c(0, 200)
+)
+print(p_amy_comp)
+
+# ----------------------------
+# Tau: MetaROI_SUVR_infcblgm (y-range 1–4.5)
+# ----------------------------
+p_tau_meta <- plot_spaghetti_with_lme_ci(
+  df_long = tau_eoad_long,
+  fit_obj = fits_sa2$tau_metaROI_ri,
+  outcome_col = "MetaROI_SUVR_infcblgm",
+  ylab = "Tau MetaROI SUVR (infcblgm)",
+  title = "EOAD Tau: MetaROI_SUVR_infcblgm (spaghetti + LME fixed effect ±95% CI)",
+  ylim = c(1, 4.5)
+)
+print(p_tau_meta)
+```
+
+# Q3: Longitudinal change in tau PET in frontal vs temporal tau-PET ROI?
+```{r}
+#write.csv(tau_eoad_long,'tau_eoad_long_filtered_forROImodeling.csv')
+# ============================================================
+# GGSEG modeling (EOAD, tau_eoad_long): cortex (DK) + subcortex (aseg)
+# Random intercept only: y ~ time_years + (1|ID)
+# Extract fixed intercept + fixed slope per ROI
+# ============================================================
+
+ 
+df <- tau_eoad_long  # assumes you already created this (EOAD only, time_years, ID_clean)
+
+id_col   <- "ID_clean"
+time_col <- "time_years"
+
+suvr_cols_all <- names(df)[str_detect(names(df), "_SUVR_infcblgm$")]
+
+cort_cols <- suvr_cols_all[str_detect(suvr_cols_all, "^ctx_(lh|rh)_")]
+
+subcort_cols <- setdiff(
+  suvr_cols_all,
+  cort_cols
+)
+
+cat(sprintf("Total SUVR columns ending _SUVR_infcblgm: %d\n", length(suvr_cols_all)))
+cat(sprintf("Cortical ctx_lh/ctx_rh (DK): %d\n", length(cort_cols)))
+cat(sprintf("Non-cortical (aseg/subcortical/other): %d\n", length(subcort_cols)))
+print(subcort_cols)
+# ----------------------------
+# 2) Long format  
+# ----------------------------
+long_all <- df %>%
+  select(all_of(c(id_col, time_col, cort_cols, subcort_cols))) %>%
+  pivot_longer(
+    cols = -all_of(c(id_col, time_col)),
+    names_to = "roi",
+    values_to = "y"
+  ) %>%
+  filter(!is.na(.data[[id_col]]), !is.na(.data[[time_col]]), !is.na(y))
+
+# Counts (from the actual modeling data)
+counts_by_roi <- long_all %>%
+  group_by(roi) %>%
+  summarise(
+    n_ids = n_distinct(.data[[id_col]]),
+    n_obs = n(),
+    .groups = "drop"
+  )
+
+# ----------------------------
+# 3) Fit RI LME per ROI (nlme::lme)
+#     y ~ time + (1|ID) 
+# ----------------------------
+fit_one_roi <- function(dd) {
+  # dd has columns: ID_clean, time_years, y
+  m <- nlme::lme(
+    fixed  = y ~ time_years,
+    random = ~ 1 | ID_clean,
+    data   = dd,
+    method = "REML",
+    na.action = na.omit,
+    control = nlme::lmeControl(opt = "optim")
+  )
+
+  tt <- summary(m)$tTable
+  b0 <- unname(tt["(Intercept)", "Value"])
+  b0_se <- unname(tt["(Intercept)", "Std.Error"])
+  b0_p  <- unname(tt["(Intercept)", "p-value"])
+
+  b1 <- unname(tt["time_years", "Value"])
+  b1_se <- unname(tt["time_years", "Std.Error"])
+  b1_p  <- unname(tt["time_years", "p-value"])
+
+  tibble(
+    intercept = b0,
+    intercept_se = b0_se,
+    intercept_p = b0_p,
+    slope = b1,
+    slope_se = b1_se,
+    slope_p = b1_p
+  )
+}
+
+results <- long_all %>%
+  group_by(roi) %>%
+  group_modify(~{
+    dd <- .x %>%
+      transmute(
+        ID_clean = .data[[id_col]],
+        time_years = .data[[time_col]],
+        y = y
+      )
+
+    # basic guardrails
+    if (n_distinct(dd$ID_clean) < 3 || nrow(dd) < 10) {
+      return(tibble(
+        intercept = NA_real_, intercept_se = NA_real_, intercept_p = NA_real_,
+        slope = NA_real_, slope_se = NA_real_, slope_p = NA_real_
+      ))
+    }
+
+    out <- tryCatch(
+      fit_one_roi(dd),
+      error = function(e) tibble(
+        intercept = NA_real_, intercept_se = NA_real_, intercept_p = NA_real_,
+        slope = NA_real_, slope_se = NA_real_, slope_p = NA_real_
+      )
+    )
+    out
+  }) %>%
+  ungroup() %>%
+  left_join(counts_by_roi, by = "roi")
+
+# Split cortex vs subcortex results
+res_cortex <- results %>% filter(str_detect(roi, "^ctx_(lh|rh)_"))
+res_subcort <- results %>% filter(!str_detect(roi, "^ctx_(lh|rh)_"))
+
+cat(sprintf("\nModeled ROIs: cortex=%d | subcort/other=%d\n",
+            nrow(res_cortex), nrow(res_subcort)))
+
+```
+
+
+```{R}
+#write.csv(res_cortex,"cortical_result.csv")
+#write.csv(res_subcort,"subcort_result.csv")
+
+```
