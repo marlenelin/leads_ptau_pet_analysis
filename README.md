@@ -108,4 +108,41 @@ leads_ptau_pet_analysis/
     - Sensitivity and specificity with 95% confidence intervals (Wilson method)
     - Confusion matrix counts (TP, FP, TN, FN)
 
- 
+ ## Baseline association between biomarkers and between biomarker and clinical outcome
+
+- **code**: `baseline_lm.rmd`
+
+- **Model Specification**
+  - Fits linear models with plasma p-tau217/log-transformed version as the dependent variable:
+    - Evaluates associations with PET biomarkers:
+      - Amyloid PET (`centiloid_wcbl`)
+      - Tau PET (`desikan_suvr`)
+    - Includes models with:
+      - Single predictors (`ptau ~ CL`, `ptau ~ TAU`)
+      - Joint predictors (`ptau ~ CL + TAU`)
+      - Interaction term (`ptau ~ CL * TAU`)
+      - Versions with and without covariate adjustment (`years_education`, `sex`, `age_at_ptau`)
+    - Interaction effects are visualized using interaction plots (tertiles of moderator)
+
+  - Fits linear models with clinical outcome as the dependent variable:
+    - Measured as:
+        - CDR-SB (`cdrsb`)
+        - MOCA (`baseline_moca`)
+    - Biomarker redictors include:
+        - Plasma p-tau217 (`ptau217`)
+        - Log-transformed p-tau217 (`log_ptau217`)
+        - Amyloid PET (`centiloid_wcbl`)
+        - Tau PET (`desikan_suvr`)
+    - Includes models with:
+        - Single biomarker (e.g., `cdr ~ ptau`)
+        - Multi-biomarker (`cdr ~ ptau + amyloid + tau`)
+        - Versions with and without covariate adjustment (`years_education`, `sex`, `age_at_ptau`)
+
+  - For each model, reports:
+    - Standardized linear regression coefficients (β)
+    - 95% confidence intervals
+    - p-values
+    - Model fit statistics:
+      - R²
+      - Adjusted R²
+      - Partial R² (if applicable)
