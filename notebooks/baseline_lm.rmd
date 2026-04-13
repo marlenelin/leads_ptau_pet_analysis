@@ -13,9 +13,7 @@ library(knitr)
 library(interactions)
 library(effectsize)
 DATA_DIR <- "/Users/mlin2/Desktop/RabLab/tasks/concurrent/data/cleaned_dat/"
-
 mergedat <- read_csv(file.path(DATA_DIR, "merged_baseline_wDemo.csv"))
-
 mergedat <- mergedat %>%
   mutate(log_ptau217 = log(ptau217)) %>%
   filter(
@@ -26,9 +24,7 @@ mergedat <- mergedat %>%
 
 df_base_eoad <- mergedat %>% filter(dx == "EOAD")
 df_base_ci   <- mergedat %>% filter(dx %in% c("EOAD", "EOnonAD"))
-
 covars <- c("age_at_ptau", "sex", "years_education")
-
 mergedat %>% count(dx)
 ```
 

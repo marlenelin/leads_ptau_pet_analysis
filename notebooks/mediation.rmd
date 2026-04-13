@@ -6,166 +6,167 @@ output: html_document
 ---
 # import 
 ```{r}
-# Core libraries
+# Data core
 library(tidyverse)
 library(lubridate)
-library(semPlot)
 # Modeling / mediation
-library(lme4)
-library(lmerTest)
 library(mediation)     # classic mediation
-library(lavaan)        # SEM-style mediation (optional)
-library(broom)
 library(dplyr)
-library(rlang)
 
 ```
+
 # Read data
 ```{r}
-path <- "/Users/mlin2/Desktop/RabLab/tasks/concurrent/cleaned_dat/"
-mpath <- "/Users/mlin2/Desktop/RabLab/tasks/concurrent/clean_dat/"
-mergedat <- read_csv(paste0(path, "merged_baseline_wDemo.csv"))
-#ptau <- read_csv(paste0(path, "ptau_cleaned_20260316.csv"))
-#tau  <- read_csv(paste0(path, "tau_cleaned_20260316.csv"))
-#amy  <- read_csv(paste0(path, "amy_cleaned_20260316.csv"))
-#cdr  <- read_csv(paste0(path, "cdr_cleaned_20260316.csv"))
-#mergedat <- read_csv(paste0(mpath,"merged_by_baseline_20260319.csv")) # read_csv(paste0(mpath,"ptau_merged_baseline_20260223_wROI.csv")) 
-# Centioids_wcbl, pTau217.Conc..pg.mL, ctx_desikan_FTP_SUVR
-# Ensure consistent ID + date formats
-#ptau <- ptau %>% mutate(ptau_date = as.Date(ptau_date))
-#tau  <- tau  %>% mutate(tau_date  = as.Date(tau_date))
-#amy  <- amy  %>% mutate(amy_date  = as.Date(amy_date))
-#cdr  <- cdr  %>% mutate(cdr_date  = as.Date(cdr_date))
-# key columns: cdr$cdrsb ptau$ptau217 tau$desikan_suvr amy$centiloid_wcbl 
-```
-#
-# baseline data and scaled
-```{r}
-make_df_base <- function(dat,
-                         dx_col,
-                         dx_keep = "EOAD",
-                         amy_col,
-                         ptau_col,
-                         tau_col,
-                         amy_date_col = NULL,
-                         ptau_date_col = NULL,
-                         tau_date_col = NULL) {
-  dat %>%
-    filter(.data[[dx_col]] == dx_keep) %>% 
-    dplyr::filter(
-      .data[[dx_col]] == dx_keep,
-      !is.na(.data[[amy_col]]),
-    !is.na(.data[[ptau_col]]),
-      !is.na(.data[[tau_col]])
-    ) %>%
-    mutate(
-      amy_z = as.numeric(scale(.data[[amy_col]])),
-      ptau  = as.numeric(.data[[ptau_col]]),
-      tau_z = as.numeric(scale(.data[[tau_col]]))
-    ) %>%
-    dplyr::select(
-      amy_z, ptau, tau_z,#tx_started,
-      all_of(c(amy_col, ptau_col, tau_col)),
-      any_of(c(amy_date_col, ptau_date_col, tau_date_col))
-    )
-}
-df_base <- make_df_base(
-  dat = mergedat,
-  dx_col = "dx",#"diagnosis_group",#
-  amy_col ="centiloid_wcbl",#"Centiloids_wcbl", #
-  ptau_col = "ptau217",#"pTau217.Conc..pg.mL.",#"ptau217",
-  tau_col = "desikan_suvr",#"ctx_desikan_FTP_SUVR",#
- # amy_date_col = "amy_date",
-#  ptau_date_col = "ptau_date",
-#  tau_date_col = "tau_date"
-)# %>%filter(tx_started==0)
-```
+DATA_DIR <- "/Users/mlin2/Desktop/RabLab/tasks/concurrent/data/cleaned_dat/"
+mergedat <- read_csv(file.path(DATA_DIR, "merged_baseline_wDemo.csv"))
+mergedat <- mergedat %>%
+  filter(
+    !is.na(ptau217),
+    !is.na(desikan_suvr),
+    !is.na(centiloid_wcbl),
+    dx %in% c("EOAD","EOnonAD")
+  )  %>%
+  mutate(log_ptau217 = log(ptau217),
+    amy_z = as.numeric(scale(centiloid_wcbl)),
+    ptau_z = as.numeric(scale(ptau217)),
+    tau_z = as.numeric(scale(desikan_suvr)),
+    log_ptau_z = as.numeric(scale(log_ptau217))
+  )   
 
-```{r}
-nrow(df_base)
+df_base_eoad <- mergedat %>% filter(dx == "EOAD")
+df_base_ci   <- mergedat %>% filter(dx %in% c("EOAD", "EOnonAD"))
+covars <- c("age_at_ptau", "sex", "years_education")
+mergedat %>% count(dx)
 ```
-
-# mediate
+# modeling 
+## NO COVARIATES — log ptau
 ```{r}
-
-med_model <- lm(ptau ~ amy_z, data = df_base)
-out_model <- lm(tau_z ~ amy_z + ptau, data = df_base)
+med_model <- lm(log_ptau_z ~ amy_z, data = df_base_eoad)
+out_model <- lm(tau_z ~ amy_z + log_ptau_z, data = df_base_eoad)
 
 med <- mediate(
   med_model,
   out_model,
   treat = "amy_z",
-  mediator = "ptau",
+  mediator = "log_ptau_z",
   boot = TRUE,
   sims = 1000
 )
 
-summary(med)
-
+print("log ptau")
+summary(med) 
+med_log <- med        
 ```
 
-# lavaan model spec
-```{R}
-model <- '
-  # mediator
-  ptau ~ a * amy_z
-  
-  # outcome
-  tau_z ~ b * ptau + c_prime * amy_z
-  
-  # indirect + total effects
-  indirect := a * b
-  total := c_prime + (a * b)
-'
-
-fit <- sem(model,data=df_base)
-summary(fit)
-standardizedsolution(fit)
-```
-
-# diagram
-```{R} 
-
-semPaths(
-  fit,
-  what = "std",
-  layout = "tree",
-  edge.label.cex = 1.2,
-  sizeMan = 6
-)
-```
-
-
-
+## NO COVARIATES — ptau
 ```{r}
-parameterEstimates(fit)
-standardizedsolution(fit)
+med_model <- lm(ptau_z ~ amy_z, data = df_base_eoad)
+out_model <- lm(tau_z ~ amy_z + ptau_z, data = df_base_eoad)
+
+med <- mediate(
+  med_model,
+  out_model,
+  treat = "amy_z",
+  mediator = "ptau_z",
+  boot = TRUE,
+  sims = 1000
+)
+
+print("ptau")
+summary(med)
+med_ptau <- med        
 ```
 
-```{R}
-model_a <- lm(ptau_z ~ amy_z, data = df_base)
-summary(model_a)
-model_c <- lm(tau_z ~ amy_z, data = df_base)
-summary(model_c)
-model_b_cprime <- lm(tau_z ~ amy_z + ptau_z, data = df_base)
-summary(model_b_cprime)
-a <- coef(model_a)["amy_z"]
-b <- coef(model_b_cprime)["ptau_z"]
-c <- coef(model_c)["amy_z"]
-c_prime <- coef(model_b_cprime)["amy_z"]
-indirect <- a * b
-total <- c
-direct <- c_prime
-prop_mediated <- indirect / total
-cat("Path a (amyloid → ptau):", round(a, 3), "\n")
-cat("Path b (ptau → tau):", round(b, 3), "\n")
-cat("Path c (total effect):", round(c, 3), "\n")
-cat("Path c' (direct effect):", round(c_prime, 3), "\n\n")
+## WITH COVARIATES — log ptau
+``` {R}
+med_model <- lm(log_ptau_z ~ amy_z + age_at_ptau + sex + years_education, data = df_base_eoad)
+out_model <- lm(tau_z ~ amy_z + log_ptau_z + age_at_ptau + sex + years_education, data = df_base_eoad)
 
-cat("Indirect effect (a*b):", round(indirect, 3), "\n")
-cat("Proportion mediated:", round(prop_mediated, 3), "\n")
-p_a <- summary(model_a)$coefficients["amy_z", "Pr(>|t|)"]
-p_b <- summary(model_b_cprime)$coefficients["ptau_z", "Pr(>|t|)"]
-p_c <- summary(model_c)$coefficients["amy_z", "Pr(>|t|)"]
-p_cprime <- summary(model_b_cprime)$coefficients["amy_z", "Pr(>|t|)"]
+med <- mediate(
+  med_model,
+  out_model,
+  treat = "amy_z",
+  mediator = "log_ptau_z",
+  boot = TRUE,
+  sims = 1000
+)
+
+print("log ptau (cov)")
+summary(med)
+med_log_cov <- med     
+```
+
+## WITH COVARIATES — ptau
+``` {R}
+med_model <- lm(ptau_z ~ amy_z + age_at_ptau + sex + years_education, data = df_base_eoad)
+out_model <- lm(tau_z ~ amy_z + ptau_z + age_at_ptau + sex + years_education, data = df_base_eoad)
+
+med <- mediate(
+  med_model,
+  out_model,
+  treat = "amy_z",
+  mediator = "ptau_z",
+  boot = TRUE,
+  sims = 1000
+)
+
+print("ptau (cov)")
+summary(med)
+med_ptau_cov <- med   
+```
+
+``` {R}
+fmt <- function(est, low, high) {
+  paste0(
+    signif(est, 3), " (",
+    signif(low, 3), ", ",
+    signif(high, 3), ")"
+  )
+}
+
+extract_row <- function(med_obj, label, cov) {
+  data.frame(
+    ptau_version = label,
+    covariates = cov,
+    
+    ACME = fmt(med_obj$d0, med_obj$d0.ci[1], med_obj$d0.ci[2]),
+    ADE  = fmt(med_obj$z0, med_obj$z0.ci[1], med_obj$z0.ci[2]),
+    Total = fmt(med_obj$tau.coef, med_obj$tau.ci[1], med_obj$tau.ci[2]),
+    Prop_Mediated = fmt(med_obj$n0, med_obj$n0.ci[1], med_obj$n0.ci[2]),
+    
+    p_ACME = signif(med_obj$d0.p, 3),
+    p_ADE  = signif(med_obj$z0.p, 3),
+    p_Total = signif(med_obj$tau.p, 3),
+    p_Prop = signif(med_obj$n0.p, 3)
+  )
+}
+
+results_table <- rbind(
+  extract_row(med_log, "log_ptau", "No"),
+  extract_row(med_ptau, "ptau", "No"),
+  extract_row(med_log_cov, "log_ptau", "Yes"),
+  extract_row(med_ptau_cov, "ptau", "Yes")
+)
+
+results_table
+#readr::write_csv(results_table,file = "data/result_table/mediation_wCov.csv")
+```
+
+
+# report (not necessary. coefficient check)
+```{r}
+a <- coef(med_model)["amy_z"]
+b <- coef(out_model)["ptau_z"]
+c_prime <- coef(out_model)["amy_z"]
+
+# total effect (separate model)
+total_model <- lm(tau_z ~ amy_z, data = df_base_eoad)
+c_total <- coef(total_model)["amy_z"]
+
+indirect <- a * b
+prop_mediated <- indirect / c_total
+data.frame(
+  path = c("a (X→M)", "b (M→Y)", "c' (X→Y;direct)", "c (total)", "c-c' (indirect)", "prop_mediated ((c-c')/c"),
+  estimate = c(a, b, c_prime, c_total, indirect, prop_mediated)
+)
 ```

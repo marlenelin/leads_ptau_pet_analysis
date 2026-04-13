@@ -124,7 +124,7 @@ leads_ptau_pet_analysis/
       - Versions with and without covariate adjustment (`years_education`, `sex`, `age_at_ptau`)
     - Interaction effects are visualized using interaction plots (tertiles of moderator)
 
-  - Fits linear models with clinical outcome as the dependent variable:
+  - Fits linear regression models with clinical outcome as the dependent variable:
     - Measured as:
         - CDR-SB (`cdrsb`)
         - MOCA (`baseline_moca`)
@@ -138,7 +138,7 @@ leads_ptau_pet_analysis/
         - Multi-biomarker (`cdr ~ ptau + amyloid + tau`)
         - Versions with and without covariate adjustment (`years_education`, `sex`, `age_at_ptau`)
 
-  - For each model, reports:
+  - **Report**
     - Standardized linear regression coefficients (β)
     - 95% confidence intervals
     - p-values
@@ -146,3 +146,35 @@ leads_ptau_pet_analysis/
       - R²
       - Adjusted R²
       - Partial R² (if applicable)
+
+## Baseline mediation analysis 
+- **code**: `mediation.rmd`
+
+- **Model Specification**
+  - Fits linear regression models with 
+    - plasma p-tau217/log-transformed version as the mediator
+    - Tau PET (`desikan_suvr`) as the outcome
+    - Amyloid PET (`centiloid_wcbl`) as the independent variable
+    - Evaluates associations with PET biomarkers:
+    - Versions with and without covariate adjustment (`years_education`, `sex`, `age_at_ptau`)
+
+- **Report**
+  - Indirect effect, direct effect, total effect, proportion mediated
+  - 95% bootstrap confidence intervals and p-values  
+
+## visualize correlation between baseline/longitudinal cognitive outcome and baseline biomarkers (consider NOT using)
+- **code** `cdr_baseline_long.rmd`
+
+- **Model specification**
+
+- **Visualization**
+
+## Applying standardized statistical framework for biomarker comparison
+- **code**: `stat_framework.ipynb`
+
+- **Spec** PENDING 
+
+- **Visualization** PENDING
+
+## Additional 
+- individual spaghetti plot (with what types of curves?): `individual_spa.rmd`
