@@ -12,3 +12,5 @@ tau26/
 unused_codes/
 *Rproj*
 .Rproj.user
+*data_check*
+notebooks/.DS_Store
