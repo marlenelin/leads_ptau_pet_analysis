@@ -1,29 +1,35 @@
 ---
-title: "individual_spa"
+title: "spaghetti plot"
 author: "marlene lin"
 date: "`r Sys.Date()`"
 output: html_document
 ---
 ```{r}
-
-library(nlme)
+library(lmerTest)
+library(lme4)
 library(ggplot2)
 library(dplyr)
 library(tidyr)
+library(effectsize)
+library(partR2)
 ```
 
 ```{R}
-clean_path <- "/Users/mlin2/Desktop/RabLab/tasks/concurrent/cleaned_dat/"
+clean_path <- "/Users/mlin2/Desktop/RabLab/tasks/concurrent/data/cleaned_dat/"
+merged_path <- "/Users/mlin2/Desktop/RabLab/tasks/concurrent/data/interim/merged_dat_202604"
+dat_bl <- read.csv(file.path(merged_path,"merged_by_baseline_20260418.csv"))
+eoad_ids <- dat_bl %>% filter(dx == "EOAD") %>% pull(subject_label)
 
 eoad <- read.csv(
-  file.path(clean_path, "ptau_ref_long_only_eoad_90d.csv"),
-  stringsAsFactors = FALSE
-) %>%
+  file.path(clean_path, "cdr_ref_long_only_eoad_90d.csv"),  stringsAsFactors = FALSE) %>%
+  filter(subject_label %in% eoad_ids) %>%
   mutate(
     time_yrs_tau  = day_to_baseline_tau  / 365.25,
     time_yrs_ptau = day_to_baseline_ptau / 365.25,
-    time_yrs_amy  = day_to_baseline_amy  / 365.25
-  ) %>%  #filter longitudinal data
+    time_yrs_amy  = day_to_baseline_amy  / 365.25,
+    time_yrs_cdr = day_to_baseline_cdr / 365.25,
+    log_ptau217 = log(ptau217)
+  ) %>%
   group_by(subject_label) %>%
   filter(n() >= 2) %>%
   ungroup()
@@ -32,95 +38,63 @@ eoad <- read.csv(
 
 ```{r}
  
-
-# Fit separate mixed models
-tau_mod <- lme(
-  fixed = desikan_suvr ~ time_yrs_tau,
-  random = ~1|subject_label,
+tau_mod <- lmer(
+  desikan_suvr ~ time_yrs_tau + (1   | subject_label),
   data = eoad,
-  na.action = na.omit,
-  method = "REML"
+  REML = FALSE,
+  na.action = na.omit
 )
 
-ptau_mod <- lme(
-  fixed = log(ptau217) ~ time_yrs_ptau, # toggle log or not log
-  random = ~1|subject_label,
+ptau_mod <- lmer(
+  log_ptau217 ~ time_yrs_ptau + (1  | subject_label),
   data = eoad,
-  na.action = na.omit,
-  method = "REML"
+  REML = FALSE,
+  na.action = na.omit
 )
 
-amy_mod <- lme(
-  fixed = centiloid_wcbl ~ time_yrs_amy,
-  random = ~1|subject_label,
+amy_mod <- lmer(
+  centiloid_wcbl ~ time_yrs_amy + (1  | subject_label),
   data = eoad,
-  na.action = na.omit,
-  method = "REML"
+  REML = FALSE,
+  na.action = na.omit
 )
 
-# Helper: fixed-effect trajectory + 95% CI
-make_pred <- function(mod, time_var, time_name, y_name, n = 200) {
-  dat <- mod$data
-  x <- dat[[time_var]]
-  x <- x[is.finite(x)]
+# helper, use ggpredict!
+# Marginal predictions + 95% CI from fixed effects
+make_pred <- function(mod, term, biomarker, n = 200) {
+  pred <- ggpredict(mod, terms = sprintf("%s [n=%d]", term, n))
 
-  grid <- data.frame(
-    x = seq(min(x, na.rm = TRUE), max(x, na.rm = TRUE), length.out = n)
-  )
-  names(grid) <- time_name
-
-  X <- model.matrix(
-    as.formula(paste("~", time_name)),
-    data = grid
-  )
-
-  beta <- fixef(mod)
-  V <- vcov(mod)
-
-  fit <- as.numeric(X %*% beta)
-  se  <- sqrt(diag(X %*% V %*% t(X)))
-
-  grid %>%
-    mutate(
-      fit = fit,
-      lwr = fit - 1.96 * se,
-      upr = fit + 1.96 * se,
-      biomarker = y_name
+  as.data.frame(pred) %>%
+    transmute(
+      time = x,
+      fit  = predicted,
+      lwr  = conf.low,
+      upr  = conf.high,
+      biomarker = biomarker
     )
 }
 
-# Prediction data
-pred_ptau <- make_pred(ptau_mod, "time_yrs_ptau", "time_yrs_ptau", "p-tau217")
-pred_amy  <- make_pred(amy_mod,  "time_yrs_amy",  "time_yrs_amy",  "Centiloid")
-pred_tau  <- make_pred(tau_mod,  "time_yrs_tau",  "time_yrs_tau",  "Tau PET")
-
-
-pred_ptau <- pred_ptau %>%
-  rename(time = time_yrs_ptau) %>%
-  mutate(biomarker = "p-tau217")
-
-pred_amy <- pred_amy %>%
-  rename(time = time_yrs_amy) %>%
-  mutate(biomarker = "Centiloid")
-
-pred_tau <- pred_tau %>%
-  rename(time = time_yrs_tau) %>%
-  mutate(biomarker = "Tau PET")
+# get prediction
+pred_ptau <- make_pred(ptau_mod, "time_yrs_ptau", "p-tau217")
+pred_amy  <- make_pred(amy_mod,  "time_yrs_amy",  "Centiloid")
+pred_tau  <- make_pred(tau_mod,  "time_yrs_tau",  "Tau PET")
 
 pred_all <- bind_rows(pred_ptau, pred_amy, pred_tau) %>%
   mutate(
     biomarker = factor(biomarker, levels = c("p-tau217", "Centiloid", "Tau PET"))
   )
 
-# Spaghetti data with modality-specific time variables
+# Spaghetti data
 spaghetti <- eoad %>%
-  select(
+  transmute(
     subject_label,
-    ptau217,time_yrs_ptau,
-    centiloid_wcbl, time_yrs_amy,
-    desikan_suvr, time_yrs_tau
+    log_ptau217,
+    centiloid_wcbl,
+    desikan_suvr,
+    time_yrs_ptau,
+    time_yrs_amy,
+    time_yrs_tau
   ) %>%
-  mutate(log_ptau217 = log(ptau217)) %>%
   pivot_longer(
     cols = c(log_ptau217, centiloid_wcbl, desikan_suvr),
     names_to = "marker",
@@ -128,19 +102,18 @@ spaghetti <- eoad %>%
   ) %>%
   mutate(
     time = case_when(
-      marker == "log_ptau217" ~ time_yrs_ptau, #toggle ptau217
-      marker == "centiloid_wcbl" ~ time_yrs_amy,
-      marker == "desikan_suvr" ~ time_yrs_tau
+      marker == "log_ptau217"    ~ time_yrs_ptau,
+      marker == "centiloid_wcbl"  ~ time_yrs_amy,
+      marker == "desikan_suvr"    ~ time_yrs_tau
     ),
     biomarker = case_when(
-      marker == "log_ptau217" ~ "p-tau217", # toggle ptau217
+      marker == "log_ptau217"    ~ "p-tau217",
       marker == "centiloid_wcbl" ~ "Centiloid",
-      marker == "desikan_suvr" ~ "Tau PET"
+      marker == "desikan_suvr"   ~ "Tau PET"
     ),
     biomarker = factor(biomarker, levels = c("p-tau217", "Centiloid", "Tau PET"))
   ) %>%
   filter(is.finite(time), is.finite(value))
-
 
 
 ```
@@ -213,17 +186,11 @@ p
 
 
 ```{r}
-  
-ptaum <- lmer(
-   log(ptau217) ~ time_yrs_ptau + (1|subject_label),
-  data = eoad,
-  na.action = na.omit,
-  REML = FALSE
-)
-summary(ptaum)
-standardise_parameters(ptaum)
+
+summary(ptau_mod)
+standardize_parameters(ptau_mod)
 pr2 <- partR2(
-  ptaum,
+  ptau_mod,
   R2_type = "marginal",
   data = eoad,
   nboot = NULL,  # start without bootstrap,
