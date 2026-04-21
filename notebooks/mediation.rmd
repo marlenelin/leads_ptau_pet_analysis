@@ -18,6 +18,7 @@ library(dplyr)
 # Read data
 ```{r}
 DATA_DIR <- "/Users/mlin2/Desktop/RabLab/tasks/concurrent/data/cleaned_dat/"
+RESULT_DIR <- "/Users/mlin2/Desktop/RabLab/tasks/concurrent/data/result_table/"
 mergedat <- read_csv(file.path(DATA_DIR, "merged_baseline_wDemo.csv"))
 mergedat <- mergedat %>%
   filter(
@@ -149,7 +150,7 @@ results_table <- rbind(
 )
 
 results_table
-#readr::write_csv(results_table,file = "data/result_table/mediation_wCov.csv")
+readr::write_csv(results_table,file = file.path(RESULT_DIR,"mediation_wCov.csv"))
 ```
 
 

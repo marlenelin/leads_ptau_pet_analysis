@@ -13,6 +13,7 @@ library(knitr)
 library(interactions)
 library(effectsize)
 DATA_DIR <- "/Users/mlin2/Desktop/RabLab/tasks/concurrent/data/cleaned_dat/"
+RESULT_DIR <-"/Users/mlin2/Desktop/RabLab/tasks/concurrent/data/result_table/"
 mergedat <- read_csv(file.path(DATA_DIR, "merged_baseline_wDemo.csv"))
 mergedat <- mergedat %>%
   mutate(log_ptau217 = log(ptau217)) %>%
@@ -218,7 +219,7 @@ result_vis <- all_results_round %>%
   ) %>%
   ungroup() %>%
   dplyr::select(model, CL, TAU, Interaction, `Significant covariates`, `Adjusted R^2`)
-#readr::write_csv( result_vis,file = "data/result_table/ptau_pet_model_summary_wCov.csv")
+readr::write_csv( result_vis,file =file.path(RESULT_DIR, "ptau_pet_model_summary_wCov.csv"))
 result_vis
 ```
 
@@ -394,7 +395,7 @@ cdr_results <- bind_rows(
   fit_biomarker_models(df_eoad_cdr, "EOAD", "cdrsb", covars)
 )
 
-readr::write_csv(cdr_results,file = "data/result_table/cdr_bl_model_summary_wCov.csv")
+readr::write_csv(cdr_results,file =file.path(RESULT_DIR,"cdr_bl_model_summary_wCov.csv"))
 ```
 
 
@@ -407,6 +408,6 @@ moca_results <- bind_rows(
   fit_biomarker_models(df_eoad_moca, "EOAD", "baseline_moca", covars)
 )
 
-readr::write_csv(moca_results,file = "data/result_table/moca_bl_model_summary_wCov.csv")
+readr::write_csv(moca_results,file =file.path(RESULT_DIR, "moca_bl_model_summary_wCov.csv"))
 
 ```

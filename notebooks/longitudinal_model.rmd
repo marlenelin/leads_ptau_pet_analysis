@@ -199,6 +199,8 @@ pr2 <- partR2(
 
 pr2$R2 %>%
   mutate(across(where(is.numeric), ~ round(.x, 3)))
+plot(ptau_mod)
+
 ```
 ```{r}
 
