@@ -30,7 +30,7 @@ def plot_ptau_box(
         y=y_col,
         palette=sns.color_palette("Paired")[8:],
         width=0.5,
-        linewidth=1.2,
+        linewidth=2,
         showfliers=False,
         ax=ax
     )
@@ -41,7 +41,7 @@ def plot_ptau_box(
         y=y_col,
         color="black",
         alpha=0.5,
-        size=3,
+        size=5,
         jitter=0.25,
         ax=ax
     )

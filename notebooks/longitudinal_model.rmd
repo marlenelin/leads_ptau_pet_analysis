@@ -12,55 +12,104 @@ library(dplyr)
 library(tidyr)
 library(effectsize)
 library(partR2)
+library(performance)
+library(purrr)
+library(readr)
 ```
 
-```{R}
-clean_path <- "/Users/mlin2/Desktop/RabLab/tasks/concurrent/data/cleaned_dat/"
-merged_path <- "/Users/mlin2/Desktop/RabLab/tasks/concurrent/data/interim/merged_dat_202604"
-dat_bl <- read.csv(file.path(merged_path,"merged_by_baseline_20260418.csv"))
-eoad_ids <- dat_bl %>% filter(dx == "EOAD") %>% pull(subject_label)
+```{R}  
 
-eoad <- read.csv(
-  file.path(clean_path, "cdr_ref_long_only_eoad_90d.csv"),  stringsAsFactors = FALSE) %>%
-  filter(subject_label %in% eoad_ids) %>%
-  mutate(
-    time_yrs_tau  = day_to_baseline_tau  / 365.25,
-    time_yrs_ptau = day_to_baseline_ptau / 365.25,
-    time_yrs_amy  = day_to_baseline_amy  / 365.25,
-    time_yrs_cdr = day_to_baseline_cdr / 365.25,
-    log_ptau217 = log(ptau217)
-  ) %>%
-  group_by(subject_label) %>%
-  filter(n() >= 2) %>%
-  ungroup()
+DATA_DIR  <- "/Users/mlin2/Desktop/RabLab/tasks/concurrent/data/cleaned_dat"
+RAW_DIR04 <- "/Users/mlin2/Desktop/RabLab/tasks/concurrent/data/raw/raw_dat_20260418"
+
+# baseline
+dat_bl <- read_csv(file.path(DATA_DIR, "merged_baseline_wDemo.csv"),
+                   show_col_types = FALSE) %>%
+  filter(dx %in% c("EOAD", "EOnonAD")) %>%
+  mutate(log_ptau217 = log(ptau217))
+
+eoad_ids <- dat_bl %>%
+  filter(dx == "EOAD") %>%
+  pull(subject_label)
+
+# helpers
+exclude_tx <- function(df) {
+  df %>%
+    filter(tx_started == 0) %>%
+    dplyr::select(-any_of(c("tx_start_date", "tx_started")))
+}
+
+filter_longitudinal <- function(df, eoad_ids, id_col = "subject_label") {
+  df %>%
+    filter(.data[[id_col]] %in% eoad_ids) %>%
+    group_by(.data[[id_col]]) %>%
+    filter(n() >= 2) %>%
+    ungroup()
+}
+
+# longitudinal files
+ptau_final <- read_csv(file.path(DATA_DIR, "ptau_cleaned_20260418.csv"),
+                       show_col_types = FALSE) %>%
+  exclude_tx() %>%
+  filter_longitudinal(eoad_ids) %>%
+  mutate(log_ptau217 = log(ptau217))
+
+tau_final <- read_csv(file.path(DATA_DIR, "tau_cleaned_20260418.csv"),
+                      show_col_types = FALSE) %>%
+  exclude_tx() %>%
+  filter_longitudinal(eoad_ids)
+
+amy_final <- read_csv(file.path(DATA_DIR, "amy_cleaned_20260418.csv"),
+                      show_col_types = FALSE) %>%
+  exclude_tx() %>%
+  filter_longitudinal(eoad_ids)
+
+cdr_final <- read_csv(file.path(DATA_DIR, "cdr_cleaned_20260418.csv"),
+                      show_col_types = FALSE) %>%
+  exclude_tx() %>%
+  filter_longitudinal(eoad_ids)
+
+moca_final <- read_csv(file.path(DATA_DIR, "moca_cleaned_20260418.csv"),
+                       show_col_types = FALSE) %>%
+  exclude_tx() %>%
+  filter_longitudinal(eoad_ids)
+
+# optional: inspect shapes
+map(list(dat_bl = dat_bl,
+         ptau_final = ptau_final,
+         tau_final = tau_final,
+         amy_final = amy_final,
+         cdr_final = cdr_final,
+         moca_final = moca_final), nrow)
 ```
 
 
 ```{r}
  
+
+# models fit on their own data frames
 tau_mod <- lmer(
-  desikan_suvr ~ time_yrs_tau + (1   | subject_label),
-  data = eoad,
+  desikan_suvr ~ year_to_baseline_tau + (1 | subject_label),
+  data = tau_final,
   REML = FALSE,
   na.action = na.omit
 )
 
 ptau_mod <- lmer(
-  log_ptau217 ~ time_yrs_ptau + (1  | subject_label),
-  data = eoad,
+  log_ptau217 ~ year_to_baseline_ptau + (1 | subject_label),
+  data = ptau_final,
   REML = FALSE,
   na.action = na.omit
 )
 
 amy_mod <- lmer(
-  centiloid_wcbl ~ time_yrs_amy + (1  | subject_label),
-  data = eoad,
+  centiloid_wcbl ~ year_to_baseline_amy + (1 | subject_label),
+  data = amy_final,
   REML = FALSE,
   na.action = na.omit
 )
 
-# helper, use ggpredict!
-# Marginal predictions + 95% CI from fixed effects
+# helper: marginal predictions + 95% CI from fixed effects
 make_pred <- function(mod, term, biomarker, n = 200) {
   pred <- ggpredict(mod, terms = sprintf("%s [n=%d]", term, n))
 
@@ -73,200 +122,91 @@ make_pred <- function(mod, term, biomarker, n = 200) {
       biomarker = biomarker
     )
 }
-
-# get prediction
-pred_ptau <- make_pred(ptau_mod, "time_yrs_ptau", "p-tau217")
-pred_amy  <- make_pred(amy_mod,  "time_yrs_amy",  "Centiloid")
-pred_tau  <- make_pred(tau_mod,  "time_yrs_tau",  "Tau PET")
-
-pred_all <- bind_rows(pred_ptau, pred_amy, pred_tau) %>%
-  mutate(
-    biomarker = factor(biomarker, levels = c("p-tau217", "Centiloid", "Tau PET"))
-  )
-
-# Spaghetti data
-spaghetti <- eoad %>%
-  transmute(
-    subject_label,
-    log_ptau217,
-    centiloid_wcbl,
-    desikan_suvr,
-    time_yrs_ptau,
-    time_yrs_amy,
-    time_yrs_tau
-  ) %>%
-  pivot_longer(
-    cols = c(log_ptau217, centiloid_wcbl, desikan_suvr),
-    names_to = "marker",
-    values_to = "value"
-  ) %>%
-  mutate(
-    time = case_when(
-      marker == "log_ptau217"    ~ time_yrs_ptau,
-      marker == "centiloid_wcbl"  ~ time_yrs_amy,
-      marker == "desikan_suvr"    ~ time_yrs_tau
-    ),
-    biomarker = case_when(
-      marker == "log_ptau217"    ~ "p-tau217",
-      marker == "centiloid_wcbl" ~ "Centiloid",
-      marker == "desikan_suvr"   ~ "Tau PET"
-    ),
-    biomarker = factor(biomarker, levels = c("p-tau217", "Centiloid", "Tau PET"))
-  ) %>%
-  filter(is.finite(time), is.finite(value))
-
-
-```
-
-
-```{r}
-# Colors for individual trajectories
-traj_cols <- c(
-  "p-tau217" = "lightblue",
-  "Centiloid" = "lightgreen",
-  "Tau PET" = "coral"
+cdr_mod <- lmer(
+  cdrsb ~ year_to_baseline_cdr + (1 | subject_label),
+  data = cdr_final,
+  REML = FALSE,
+  na.action = na.omit
 )
 
-p <- ggplot() +
-  geom_line(
-    data = spaghetti,
-    aes(x = time, y = value, group = subject_label, color = biomarker),
-    alpha = 0.4,
-    linewidth = 0.4
-  ) +
-  geom_ribbon(
-    data = pred_all,
-    aes(x = time, ymin = lwr, ymax = upr),
-    fill = "grey60",
-    alpha = 0.25
-  ) +
-  geom_line(
-    data = pred_all,
-    aes(x = time, y = fit),
-    color = "black",
-    linewidth = 1
-  ) +
-  scale_color_manual(values = traj_cols) +
-  facet_wrap(~ biomarker, nrow = 1, scales = "free_y") +
-  labs(
-    x = "years from baseline",
-    y = NULL
-  ) +
-  theme_classic(base_size = 12) +
-  theme(
-    legend.position = "none",
-    strip.background = element_blank(),
-    strip.text = element_text(face = "bold"),
-    axis.title.x = element_text(margin = margin(t = 8))
-  )
-
-ggsave(
-  filename = "eoad_spaghetti_lme_trajectories.png",
-  plot = p,
-  width = 10,
-  height = 5,
-  dpi = 100
+moca_mod <- lmer(
+  moca ~ year_to_baseline_moca + (1 | subject_label),
+  data = moca_final,
+  REML = FALSE,
+  na.action = na.omit
 )
+# predictions from each marker-specific dataframe/model
+pred_ptau <- make_pred(ptau_mod, "year_to_baseline_ptau", "p-tau217")
+pred_amy  <- make_pred(amy_mod,  "year_to_baseline_amy",  "Centiloid")
+pred_tau  <- make_pred(tau_mod,  "year_to_baseline_tau",  "Tau PET")
+pred_cdr  <- make_pred(cdr_mod,  "year_to_baseline_cdr",  "CDR")
+pred_moca <- make_pred(moca_mod, "year_to_baseline_moca", "MoCA")
 
-p <- p +
-  facet_wrap(
-    ~ biomarker,
-    nrow = 1,
-    scales = "free_y",
-    labeller = labeller(
-      biomarker = c(
-        "p-tau217" = "log(p-tau217)",
-        "Centiloid" = "Centiloid",
-        "Tau PET" = "Tau PET"
-      )
+pred_all <- bind_rows(
+  pred_ptau, pred_amy, pred_tau,
+  pred_cdr, pred_moca
+) %>%
+  mutate(
+    biomarker = factor(
+      biomarker,
+      levels = c("p-tau217", "Centiloid", "Tau PET", "CDR", "MoCA")
     )
   )
-p
-```
-
-
-```{r}
-
-summary(ptau_mod)
-standardize_parameters(ptau_mod)
-pr2 <- partR2(
-  ptau_mod,
-  R2_type = "marginal",
-  data = eoad,
-  nboot = NULL,  # start without bootstrap,
-  partvars = c(  "time_yrs_ptau")
-)
-
-pr2$R2 %>%
-  mutate(across(where(is.numeric), ~ round(.x, 3)))
-plot(ptau_mod)
-
-```
-```{r}
-
-amym <- lmer(
-   centiloid_wcbl ~ time_yrs_amy + (1|subject_label),
-  data = eoad,
-  na.action = na.omit,
-  REML = FALSE
-)
-summary(amym)
-standardise_parameters(amym)
-pr2 <- partR2(
-  amym,
-  R2_type = "marginal",
-  data = eoad,
-  nboot = NULL,  # start without bootstrap,
-  partvars = c(  "time_yrs_amy")
-)
-
  
-pr2$R2 %>%
-  mutate(across(where(is.numeric), ~ round(.x, 3)))
+ 
 ```
-```{R}
 
-taum <- lmer(
-   scale(desikan_suvr) ~ time_yrs_tau + (1|subject_label),
-  data = eoad,
-  na.action = na.omit,
-  REML = FALSE
-)
-summary(taum)
-standardise_parameters(taum)
-pr2 <- partR2(
-  taum,
-  R2_type = "marginal",
-  data = eoad,
-  nboot = NULL,  # start without bootstrap,
-  partvars = c(  "time_yrs_tau")
-)
 
-pr2$R2 %>%
-  mutate(across(where(is.numeric), ~ round(.x, 3)))
+
+
+```{r} 
+
+summarize_lmm <- function(mod, term, label) {
+  # standardized coefficients
+  std <- parameters::standardize_parameters(mod, verbose = FALSE) %>%
+    as.data.frame()
+
+  std_col <- grep("^Std_", names(std), value = TRUE)[1]
+
+  beta <- std %>%
+    filter(.data$Parameter == term) %>%
+    pull(all_of(std_col)) %>%
+    as.numeric()
+
+  # p-value from lmerTest summary
+  pval <- coef(summary(mod))[term, "Pr(>|t|)"]
+
+  # R2
+  r2 <- performance::r2_nakagawa(mod, verbose = FALSE)
+
+  cat("\n", label, "\n", sep = "")
+  cat(sprintf("standardized coefficient: %.3f\n", beta))
+  cat(sprintf("p-value: %.4f\n", pval))
+  cat(sprintf("marginal R2: %.3f\n", r2$R2_marginal))
+  cat(sprintf("conditional R2: %.3f\n", r2$R2_conditional))
+
+  invisible(list(
+    beta = beta,
+    pval = pval,
+    r2_marginal = r2$R2_marginal,
+    r2_conditional = r2$R2_conditional
+  ))
+}
+
+
+
 ```
+
+
 ```{r}
 
-print("centiloid ~ time + (1|ID)")
-r2_nakagawa(lmer(
-   centiloid_wcbl ~ day_to_baseline_amy + (1|subject_label),#+day_to_baseline_amy
-  data = eoad,
-  na.action = na.omit,
-  REML = FALSE
-))
-print("desikan suvr ~ time + (1|ID)")
-r2_nakagawa(lmer(
-   desikan_suvr ~ time_yrs_tau + (1|subject_label),#+time_yrs_tau
-  data = eoad,
-  na.action = na.omit,
-  REML = FALSE
-))
+# run for all models
+# run for all models
+summarize_lmm(tau_mod,  "year_to_baseline_tau",  "cortical FTP PET")
+summarize_lmm(ptau_mod, "year_to_baseline_ptau", "log p-tau217")
+summarize_lmm(amy_mod,  "year_to_baseline_amy",  "Centiloid")
+summarize_lmm(cdr_mod,  "year_to_baseline_cdr",  "CDRSB")
+summarize_lmm(moca_mod, "year_to_baseline_moca", "MoCA")
 
-print("log(ptau) ~ time + (1|ID)")
-r2_nakagawa(lmer(
-   log(ptau217) ~ time_yrs_ptau + (1|subject_label),#time_yrs_ptau
-  data = eoad,
-  na.action = na.omit,
-  REML = FALSE
-))
+```
 ```

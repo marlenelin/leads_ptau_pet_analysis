@@ -237,10 +237,15 @@ make_interaction_plot <- function(fit, pred, modx, title, xlab, ylab,
     interval = TRUE
   ) +
     scale_color_gradient(low = low_col, high = high_col) +
-    scale_fill_gradient(low = low_col, high = high_col) +
+  #  scale_fill_gradient(low = low_col, high = high_col) +
     guides(fill = "none") +   
     labs(title = title, x = xlab, y = ylab) +
-    theme_classic()
+    theme_classic() +
+  theme(
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12),
+    plot.title = element_text(size = 16, face = "bold")
+  )
 
   # enforce y axis
   p$scales$scales <- p$scales$scales[
@@ -261,18 +266,19 @@ p_ci_tau <- make_interaction_plot(
   desikan_suvr,
   centiloid_wcbl,
   "CI (EOAD + EOnonAD)",
-  "Tau PET (desikan_suvr)",
+  "cortical FTP SUVR",
   "Predicted log(pTau)",
-  "#fcae70", "#cb181d"
+     "#a1d90b", "#006d2c"
 )
 p_eoad_tau <- make_interaction_plot(
   fit_eoad,
   desikan_suvr,
   centiloid_wcbl,
   "EOAD only",
-  "Tau PET (desikan_suvr)",
-  "Predicted log(pTau)",
-  "#fcae91", "#cb181d"
+  "cortical FTP SUVR",
+  "Predicted log(p-tau)",
+    "#a1d90b", "#006d2c"
+ 
 )
  
 
@@ -281,18 +287,18 @@ p_ci_amy <- make_interaction_plot(
   centiloid_wcbl,
   desikan_suvr,
   "CI (EOAD + EOnonAD)",
-  "Amyloid PET (centiloid_wcbl)",
-  "Predicted log(pTau)",
-  "#a1d90b", "#006d2c"
+  "Centiloid (wcbl)",
+  "Predicted log(p-tau)",
+  "#fcae91", "#cb181d"
 )
 p_eoad_amy <- make_interaction_plot(
   fit_eoad,
   centiloid_wcbl,
   desikan_suvr,
   "EOAD only",
-  "Amyloid PET (centiloid_wcbl)",
+  "Centiloid (wcbl)",
   "Predicted log(pTau)",
-  "#a1d90b", "#006d2c"
+   "#fcae91", "#cb181d"
 )
 
 
@@ -337,23 +343,27 @@ fit_biomarker_models <- function(df, cohort_name, outcome, covars = character(0)
       r2 = summary(fit)$r.squared,
       adj_r2 = summary(fit)$adj.r.squared
     )
-
-    # --- coefficients ---
-    tidy_tbl <- broom::tidy(fit, conf.int = TRUE)
-
-    coef_tbl <- tidy_tbl %>%
-      filter(term != "(Intercept)") %>%
-      mutate(
-        term_label = paste0(
-          term, ": ",
-          sprintf("%.3f [%.3f, %.3f], p=%.3f",
-                  estimate, conf.low, conf.high, p.value)
-        )
-      ) %>%
-      summarise(coefs = paste(term_label, collapse = "; "))
-
-    eta_tbl <- effectsize::eta_squared(fit, partial = TRUE) %>%
-    as_tibble()
+ 
+    # --- coefficients (raw + standardized) ---
+  tidy_tbl <- broom::tidy(fit, conf.int = TRUE)
+  
+  std_tbl <- parameters::standardize_parameters(fit, method = "posthoc") %>%
+    as_tibble() %>%
+    rename(term = Parameter)
+  
+  coef_tbl <- tidy_tbl %>%
+    filter(term != "(Intercept)") %>%
+    left_join(std_tbl, by = "term") %>%
+    mutate(
+      term_label = paste0(
+        term, ": ",
+        sprintf("%.3f [%.3f, %.3f], p=%.3f, β=%.3f",
+                estimate, conf.low, conf.high, p.value, Std_Coefficient)
+      )
+    ) %>%
+    summarise(coefs = paste(term_label, collapse = "; "))
+      eta_tbl <- effectsize::eta_squared(fit, partial = TRUE) %>%
+      as_tibble()
 
     # find the correct eta column automatically
     eta_col <- grep("^Eta2", names(eta_tbl), value = TRUE)
@@ -387,27 +397,152 @@ fit_biomarker_models <- function(df, cohort_name, outcome, covars = character(0)
 ```
 
 ```{r cdr baseline model} 
+
 df_eoad_cdr <- df_base_eoad %>%
   filter(!is.na(cdrsb), is.finite(cdrsb))
 
+# --- stratify ---
+df_eoad_cdr_mci <- df_eoad_cdr %>%
+  filter(clinical_severity_baseline == "MCI")
+
+df_eoad_cdr_dem <- df_eoad_cdr %>%
+  filter(clinical_severity_baseline == "Dementia")
+
 cdr_results <- bind_rows(
-  fit_biomarker_models(df_eoad_cdr, "EOAD", "cdrsb", character(0)),
-  fit_biomarker_models(df_eoad_cdr, "EOAD", "cdrsb", covars)
+
+  # --- ALL EOAD ---
+  fit_biomarker_models(df_eoad_cdr, "EOAD_all", "cdrsb", character(0)),
+  fit_biomarker_models(df_eoad_cdr, "EOAD_all", "cdrsb", covars),
+
+  # --- MCI ---
+  fit_biomarker_models(df_eoad_cdr_mci, "EOAD_MCI", "cdrsb", character(0)),
+  fit_biomarker_models(df_eoad_cdr_mci, "EOAD_MCI", "cdrsb", covars),
+
+  # --- Dementia ---
+  fit_biomarker_models(df_eoad_cdr_dem, "EOAD_Dementia", "cdrsb", character(0)),
+  fit_biomarker_models(df_eoad_cdr_dem, "EOAD_Dementia", "cdrsb", covars)
+
 )
 
-readr::write_csv(cdr_results,file =file.path(RESULT_DIR,"cdr_bl_model_summary_wCov.csv"))
+readr::write_csv(
+  cdr_results,
+  file = file.path(RESULT_DIR, "cdr_bl_model_summary_wCov_stratified.csv")
+)
+
+cdr_results
 ```
 
 
-```{r moca baseline model}
+```{r moca baseline model} 
+
 df_eoad_moca <- df_base_eoad %>%
   filter(!is.na(baseline_moca), is.finite(baseline_moca))
 
+# --- stratify ---
+df_eoad_moca_mci <- df_eoad_moca %>%
+  filter(clinical_severity_baseline == "MCI")
+
+df_eoad_moca_dem <- df_eoad_moca %>%
+  filter(clinical_severity_baseline == "Dementia")
+
 moca_results <- bind_rows(
-  fit_biomarker_models(df_eoad_moca, "EOAD", "baseline_moca", character(0)),
-  fit_biomarker_models(df_eoad_moca, "EOAD", "baseline_moca", covars)
+
+  # --- ALL EOAD ---
+  fit_biomarker_models(df_eoad_moca, "EOAD_all", "baseline_moca", character(0)),
+  fit_biomarker_models(df_eoad_moca, "EOAD_all", "baseline_moca", covars),
+
+  # --- MCI ---
+  fit_biomarker_models(df_eoad_moca_mci, "EOAD_MCI", "baseline_moca", character(0)),
+  fit_biomarker_models(df_eoad_moca_mci, "EOAD_MCI", "baseline_moca", covars),
+
+  # --- Dementia ---
+  fit_biomarker_models(df_eoad_moca_dem, "EOAD_Dementia", "baseline_moca", character(0)),
+  fit_biomarker_models(df_eoad_moca_dem, "EOAD_Dementia", "baseline_moca", covars)
+
 )
 
-readr::write_csv(moca_results,file =file.path(RESULT_DIR, "moca_bl_model_summary_wCov.csv"))
+readr::write_csv(
+  moca_results,
+  file = file.path(RESULT_DIR, "moca_bl_model_summary_wCov_stratified.csv")
+)
 
+moca_results
+
+```
+```{r plot baseline cor}
+
+library(patchwork)
+
+make_scatter <- function(df, x, y, xlab, ylab, log_x = FALSE, color = "black") {
+  
+  # fit model for stats
+  fit <- lm(as.formula(paste(y, "~", x)), data = df)
+  sm <- summary(fit)
+  
+  beta <- round(coef(fit)[2], 2)
+  pval <- signif(sm$coefficients[2,4], 2)
+  adjr2 <- round(sm$adj.r.squared, 2)
+
+  label <- paste0("β = ", beta, ", p = ", pval, ", adj. R² = ", adjr2)
+
+  p <- ggplot(df, aes_string(x = x, y = y)) +
+    geom_point(alpha = 0.6, size = 1.5) +
+    geom_smooth(method = "lm", color = color, fill = "grey70") +
+    labs(x = xlab, y = ylab) +
+   # annotate("text", x = Inf, y = Inf, label = label,
+    #         hjust = 1.1, vjust = 1.5, size = 4) +
+    theme_classic(base_size = 14)
+
+  # log-scale x-axis for ptau
+  if (log_x) {
+    p <- p + scale_x_log10()
+  }
+
+  return(p)
+}
+```
+
+
+```{r cdr bl corr}
+ 
+df_plot <- df_base_eoad %>%
+  filter(!is.na(cdrsb), !is.na(ptau217), !is.na(centiloid_wcbl), !is.na(desikan_suvr))
+
+p1 <- make_scatter(df_plot, "ptau217", "cdrsb",
+                   "Plasma p-tau217", "Baseline CDR-SB",
+                   log_x = TRUE, color = "#9ecae1")
+
+p2 <- make_scatter(df_plot, "centiloid_wcbl", "cdrsb",
+                   "Centiloid", "Baseline CDR-SB",
+                   color = "#74c476")
+
+p3 <- make_scatter(df_plot, "desikan_suvr", "cdrsb",
+                   "Cortical FTP SUVR", "Baseline CDR-SB",
+                   color = "#fb6a4a")
+
+(p1 | p2 | p3)
+
+
+
+```
+
+
+```{r moca bl cor}
+
+df_plot_moca <- df_base_eoad %>%
+  filter(!is.na(baseline_moca), !is.na(ptau217), !is.na(centiloid_wcbl), !is.na(desikan_suvr))
+
+p1_m <- make_scatter(df_plot_moca, "ptau217", "baseline_moca",
+                     "Plasma p-tau217", "Baseline MOCA",
+                     log_x = TRUE, color = "#9ecae1")
+
+p2_m <- make_scatter(df_plot_moca, "centiloid_wcbl", "baseline_moca",
+                     "Centiloid", "Baseline MOCA",
+                     color = "#74c476")
+
+p3_m <- make_scatter(df_plot_moca, "desikan_suvr", "baseline_moca",
+                     "Cortical FTP SUVR", "Baseline MOCA",
+                     color = "#fb6a4a")
+
+(p1_m | p2_m | p3_m)
 ```

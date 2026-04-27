@@ -1,0 +1,355 @@
+# readin 
+```{r}
+library(readr)
+library(dplyr)
+library(lubridate)
+library(lme4)
+library(tibble)
+library(stringr) 
+library(ggplot2)
+library(colorspace)
+# ============================================================ 
+library(lmerTest)     # p-values for fixed effects
+library(performance)  # marginal R^2  
+```
+
+
+```{R}
+
+
+DATA_DIR  <- "/Users/mlin2/Desktop/RabLab/tasks/concurrent/data/cleaned_dat"
+RAW_DIR04 <- "/Users/mlin2/Desktop/RabLab/tasks/concurrent/data/raw/raw_dat_20260418"
+
+# baseline
+dat_bl <- read_csv(file.path(DATA_DIR, "merged_baseline_wDemo.csv"),
+                   show_col_types = FALSE) %>%
+  filter(dx %in% c("EOAD", "EOnonAD")) %>%
+  mutate(log_ptau217 = log(ptau217))
+
+eoad_ids <- dat_bl %>%
+  filter(dx == "EOAD") %>%
+  pull(subject_label)
+  
+
+cdr_final <- read_csv(file.path(DATA_DIR, "cdr_cleaned_20260418.csv"),
+                      show_col_types = FALSE) %>%
+  exclude_tx() %>%
+  filter_longitudinal(eoad_ids)
+
+moca_final <- read_csv(file.path(DATA_DIR, "moca_cleaned_20260418.csv"),
+                       show_col_types = FALSE) %>%
+  exclude_tx() %>%
+  filter_longitudinal(eoad_ids) 
+# create a joint one with bl vals 
+cog_dat <- moca_final %>%
+  left_join(
+    dat_bl %>%
+      dplyr::select(subject_label, log_ptau217, desikan_suvr, centiloid_wcbl),
+    by = "subject_label"
+  ) %>%
+  filter(
+    !is.na(moca),
+    !is.na(year_to_baseline_moca),
+    !is.na(log_ptau217),
+    !is.na(desikan_suvr),
+    !is.na(centiloid_wcbl)
+  )
+cog_dat <- cog_dat %>%
+  mutate(time = year_to_baseline_moca)
+```
+ 
+ 
+# fitting longitudinal Cog ~ biomarkers model 
+
+```{r}
+m_ptau <- lmer(
+  moca ~ log_ptau217 * time +
+    (1 + time | subject_label),
+  data = cog_dat
+)
+m_tau <- lmer(
+  moca ~ desikan_suvr * time +
+    (1 + time | subject_label),
+  data = cog_dat
+)
+m_cl <- lmer(
+  moca ~ centiloid_wcbl * time +
+    (1 + time | subject_label),
+  data = cog_dat
+)
+m_full <- lmer(
+  moca ~ 
+    log_ptau217 * time +
+    desikan_suvr * time +
+    centiloid_wcbl * time +
+    (1 + time | subject_label),
+  data = cog_dat
+)
+```
+ 
+# extract raw interaction term coeff, p value, standardized coeff 
+```{R result extract}
+library(broom.mixed) 
+library(tibble)
+
+# --- total N ---
+n_rows <- nrow(cog_dat)
+n_subj <- dplyr::n_distinct(cog_dat$subject_label)
+
+n_tbl <- tibble(
+  n_rows = n_rows,
+  n_subjects = n_subj
+)
+
+# --- helper to extract both raw + standardized ---
+extract_interaction_full <- function(fit, label) {
+
+  raw <- broom.mixed::tidy(fit, effects = "fixed") %>%
+    filter(grepl(":", term) & grepl("time", term)) %>%
+    dplyr::select(term, estimate, p.value)
+
+  std <- parameters::standardize_parameters(fit, method = "posthoc") %>%
+    as_tibble() %>%
+    rename(term = Parameter) %>%
+    filter(grepl(":", term) & grepl("time", term)) %>%
+    dplyr::select(term, Std_Coefficient)
+
+  raw %>%
+    left_join(std, by = "term") %>%
+    mutate(model = label) %>%
+    dplyr::select(model, term,
+           beta_raw = estimate,
+           beta_std = Std_Coefficient,
+           p = p.value)
+}
+
+# --- apply to all models ---
+res_tbl <- bind_rows(
+  extract_interaction_full(m_ptau, "pTau"),
+  extract_interaction_full(m_tau,  "Tau"),
+  extract_interaction_full(m_cl,   "Centiloid"),
+  extract_interaction_full(m_full, "Full")
+)
+
+# --- add N ---
+final_tbl <- res_tbl %>%
+  mutate(
+    n_rows = n_rows,
+    n_subjects = n_subj
+  )
+
+final_tbl %>%
+  mutate(
+    across(c(beta_raw, beta_std, p), ~ round(.x,3))
+  )
+```
+ 
+
+
+# get the r square 
+```{r}
+
+
+
+model_performance(m_ptau)
+model_performance(m_tau)
+model_performance(m_cl)
+model_performance(m_full)
+```
+# semi partial r (by subtraction)
+```{r}
+ 
+
+# full model
+m_full <- lmer(
+  moca ~ 
+    log_ptau217 * time +
+    desikan_suvr * time +
+    centiloid_wcbl * time +
+    (1 + time | subject_label),
+  data = cog_dat
+)
+
+# remove each interaction term one at a time
+m_no_ptau <- update(m_full, . ~ . - log_ptau217:time)
+m_no_tau  <- update(m_full, . ~ . - desikan_suvr:time)
+m_no_cl   <- update(m_full, . ~ . - centiloid_wcbl:time)
+
+# marginal R²
+r2_full    <- r2(m_full)$R2_marginal
+r2_no_ptau <- r2(m_no_ptau)$R2_marginal
+r2_no_tau  <- r2(m_no_tau)$R2_marginal
+r2_no_cl   <- r2(m_no_cl)$R2_marginal
+
+# contribution
+tibble(
+  term = c("pTau:time", "Tau:time", "CL:time"),
+  delta_R2 = c(
+    round(r2_full - r2_no_ptau,3),
+    round(r2_full - r2_no_tau,3),
+    round(r2_full - r2_no_cl,3)
+  )
+)
+```
+
+
+# plot marginal effect plot 
+```{r}   
+
+
+# --- helper: better shading ---
+three_shades <- function(base_col) {
+  c(
+    lighten(base_col, 0.4),
+    base_col,
+    darken(base_col, 0.4)
+  )
+}
+
+# --- base colors per biomarker ---
+color_map <- c(
+  centiloid_wcbl_bl = "#2ca25f",
+  log_ptau_bl       = "#3182bd",
+  desikan_suvr_bl   = "#e6550d"
+)
+
+pretty_lab <- c(
+  log_ptau_bl       = "log(p-tau)",
+  centiloid_wcbl_bl = "Centiloid",
+  desikan_suvr_bl   = "Cortical tau"
+)
+
+# --- shading lookup (per biomarker) ---
+shade_df <- map_dfr(names(color_map), function(bm) {
+  cols <- three_shades(color_map[[bm]])
+  
+  tibble(
+    biomarker = bm,
+    z_level = factor(c("−1 SD", "Mean", "+1 SD"),
+                     levels = c("−1 SD", "Mean", "+1 SD")),
+    col = cols
+  )
+})
+
+# --- marginal effect function ---
+make_marginal_effect_df <- function(d,
+                                    biomarker,
+                                    timevar = "time_yrs",
+                                    id = "subject_label",
+                                    outcome = "moca",
+                                    covars = NULL,
+                                    REML = FALSE) {
+
+  covars <- covars %||% character(0)
+
+  dd <- d %>%
+    dplyr::select(all_of(c(outcome, id, timevar, biomarker, covars))) %>%
+    drop_na()
+
+  biom_z <- paste0(biomarker, "_z")
+  dd[[biom_z]] <- scale(dd[[biomarker]])[,1]
+
+  fml <- as.formula(
+    paste0(
+      outcome, " ~ ",
+      biom_z, " * ", timevar,
+      if (length(covars) > 0) paste0(" + ", paste(covars, collapse = " + ")) else "",
+      " + (1 + ", timevar, " | ", id, ")"
+    )
+  )
+
+  fit <- lmerTest::lmer(fml, data = dd, REML = REML)
+
+  pred <- ggpredict(
+    fit,
+    terms = c(paste0(timevar, " [all]"), paste0(biom_z, " [-1,0,1]"))
+  ) %>%
+    as.data.frame() %>%
+    rename(
+      time_yrs = x,
+      pred = predicted,
+      lo = conf.low,
+      hi = conf.high
+    ) %>%
+    mutate(
+      biomarker = biomarker,
+      z_level = factor(group,
+                       levels = c("-1", "0", "1"),
+                       labels = c("−1 SD", "Mean", "+1 SD"))
+    )
+
+  list(fit = fit, pred_df = pred)
+}
+
+# --- prepare data ---
+df_long_filtered <- cog_dat %>%
+  rename(
+    log_ptau_bl = log_ptau217,
+    centiloid_wcbl_bl = centiloid_wcbl,
+    desikan_suvr_bl = desikan_suvr,
+    time_yrs = time
+  )
+
+biomarkers <- c("log_ptau_bl", "centiloid_wcbl_bl", "desikan_suvr_bl")
+
+# --- run models ---
+res_list <- map(
+  biomarkers,
+  ~ make_marginal_effect_df(
+    d = df_long_filtered,
+    biomarker = .x,
+    timevar = "time_yrs",
+    id = "subject_label",
+    outcome = "moca",
+    covars = NULL,
+    REML = FALSE
+  )
+)
+
+# --- combine predictions ---
+pred_long <- map_dfr(res_list, "pred_df") %>%
+  left_join(shade_df, by = c("biomarker", "z_level")) %>%
+  mutate(
+    biomarker_lab = factor(
+      biomarker,
+      levels = biomarkers,
+      labels = pretty_lab[biomarkers]
+    ),
+    group_key = paste(biomarker, z_level)
+  )
+
+# --- color lookup per biomarker + level ---
+color_lookup <- shade_df %>%
+  mutate(key = paste(biomarker, z_level))
+
+# --- final plot ---
+pp <- ggplot(
+  pred_long,
+  aes(x = time_yrs, y = pred, group = group_key, color = group_key)
+) +
+  geom_ribbon(
+    aes(ymin = lo, ymax = hi, fill = group_key),
+    alpha = 0.18,
+    colour = NA
+  ) +
+  geom_line(linewidth = 1.2) +
+  facet_wrap(~ biomarker_lab) +
+  scale_color_manual(values = setNames(color_lookup$col, color_lookup$key)) +
+  scale_fill_manual(values = setNames(color_lookup$col, color_lookup$key)) +
+  coord_cartesian(xlim = c(0, 4), ylim = c(0, 18)) +
+  theme_bw(base_size = 14) +
+  theme(
+    legend.position = "none",
+    strip.text = element_text(face = "bold", size = 14)
+  ) +
+  labs(
+    x = "years from baseline",
+    y = "Longitudinal moca"
+  )
+
+pp
+ 
+```
+
+ 
+ 
