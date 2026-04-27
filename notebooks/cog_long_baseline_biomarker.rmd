@@ -36,26 +36,26 @@ cdr_final <- read_csv(file.path(DATA_DIR, "cdr_cleaned_20260418.csv"),
   exclude_tx() %>%
   filter_longitudinal(eoad_ids)
 
-moca_final <- read_csv(file.path(DATA_DIR, "moca_cleaned_20260418.csv"),
+cdrsb_final <- read_csv(file.path(DATA_DIR, "cdrsb_cleaned_20260418.csv"),
                        show_col_types = FALSE) %>%
   exclude_tx() %>%
   filter_longitudinal(eoad_ids) 
 # create a joint one with bl vals 
-cog_dat <- moca_final %>%
+cog_dat <- cdr_final %>%
   left_join(
     dat_bl %>%
-      dplyr::select(subject_label, log_ptau217, desikan_suvr, centiloid_wcbl),
+      dplyr::select(subject_label, log_ptau217, desikan_suvr, centiloid_wcbl, age_at_ptau, sex, years_education),
     by = "subject_label"
   ) %>%
   filter(
-    !is.na(moca),
-    !is.na(year_to_baseline_moca),
+    !is.na(cdrsb),
+    !is.na(year_to_baseline_cdr),
     !is.na(log_ptau217),
     !is.na(desikan_suvr),
     !is.na(centiloid_wcbl)
   )
 cog_dat <- cog_dat %>%
-  mutate(time = year_to_baseline_moca)
+  mutate(time = year_to_baseline_cdr)
 ```
  
  
@@ -63,25 +63,25 @@ cog_dat <- cog_dat %>%
 
 ```{r}
 m_ptau <- lmer(
-  moca ~ log_ptau217 * time +
+  cdrsb ~ log_ptau217 * time + sex + age_at_ptau + years_education + 
     (1 + time | subject_label),
   data = cog_dat
 )
 m_tau <- lmer(
-  moca ~ desikan_suvr * time +
+  cdrsb ~ desikan_suvr * time + sex + age_at_ptau + years_education + 
     (1 + time | subject_label),
   data = cog_dat
 )
 m_cl <- lmer(
-  moca ~ centiloid_wcbl * time +
+  cdrsb ~ centiloid_wcbl * time + sex + age_at_ptau + years_education + 
     (1 + time | subject_label),
   data = cog_dat
 )
 m_full <- lmer(
-  moca ~ 
+  cdrsb ~ 
     log_ptau217 * time +
     desikan_suvr * time +
-    centiloid_wcbl * time +
+    centiloid_wcbl * time + sex + age_at_ptau + years_education + 
     (1 + time | subject_label),
   data = cog_dat
 )
@@ -162,7 +162,7 @@ model_performance(m_full)
 
 # full model
 m_full <- lmer(
-  moca ~ 
+  cdrsb ~ 
     log_ptau217 * time +
     desikan_suvr * time +
     centiloid_wcbl * time +
@@ -236,7 +236,7 @@ make_marginal_effect_df <- function(d,
                                     biomarker,
                                     timevar = "time_yrs",
                                     id = "subject_label",
-                                    outcome = "moca",
+                                    outcome = "cdrsb",
                                     covars = NULL,
                                     REML = FALSE) {
 
@@ -300,8 +300,8 @@ res_list <- map(
     biomarker = .x,
     timevar = "time_yrs",
     id = "subject_label",
-    outcome = "moca",
-    covars = NULL,
+    outcome = "cdrsb",
+    covars = c("age_at_ptau","sex","years_education"),
     REML = FALSE
   )
 )
@@ -344,7 +344,7 @@ pp <- ggplot(
   ) +
   labs(
     x = "years from baseline",
-    y = "Longitudinal moca"
+    y = "Longitudinal cdrsb"
   )
 
 pp

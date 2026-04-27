@@ -135,7 +135,7 @@ def _binomial_ci(x, n, alpha=0.05):
 # ----------------------------
 def compute_threshold_metrics(y_true, y_score, thresholds, sf=None, alpha=0.05):
 
-    def _round(x):
+    def _round(x, sf=sf):
         try:
             if sf is None or x is None or np.isnan(x):
                 return x
@@ -163,15 +163,15 @@ def compute_threshold_metrics(y_true, y_score, thresholds, sf=None, alpha=0.05):
         spec_lo, spec_hi = _binomial_ci(tn, tn + fp, alpha)
 
         results[name] = {
-            "threshold": _round(thr),
+            "threshold": _round(thr,sf),
 
-            "sensitivity": _round(sens),
-            "sens_ci_lo": _round(sens_lo),
-            "sens_ci_hi": _round(sens_hi),
+            "sensitivity": _round(sens,sf),
+            "sens_ci_lo": _round(sens_lo,sf),
+            "sens_ci_hi": _round(sens_hi,sf),
 
-            "specificity": _round(spec),
-            "spec_ci_lo": _round(spec_lo),
-            "spec_ci_hi": _round(spec_hi),
+            "specificity": _round(spec,sf),
+            "spec_ci_lo": _round(spec_lo,sf),
+            "spec_ci_hi": _round(spec_hi,sf),
 
             "tp": int(tp),
             "fp": int(fp),
@@ -185,8 +185,8 @@ def compute_threshold_metrics(y_true, y_score, thresholds, sf=None, alpha=0.05):
         rows.append({
             "Threshold": name,
             "Cutoff": res["threshold"],
-            "Sensitivity": f"{res['sensitivity']:.2f} ({res['sens_ci_lo']:.2f}–{res['sens_ci_hi']:.2f})",
-            "Specificity": f"{res['specificity']:.2f} ({res['spec_ci_lo']:.2f}–{res['spec_ci_hi']:.2f})",
+            "Sensitivity": f"{res['sensitivity']} ({res['sens_ci_lo']}–{res['sens_ci_hi']})",
+            "Specificity": f"{res['specificity']} ({res['spec_ci_lo']}–{res['spec_ci_hi']})",
             "TP": res["tp"],
             "FP": res["fp"],
             "TN": res["tn"],
